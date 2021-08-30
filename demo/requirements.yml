@@ -1,0 +1,8 @@
+---
+
+#collections:
+#  - source: https://github.com/bob1de/ansible-collection-webswarm
+#    version: master
+#    name: bob1de.webswarm
+
+roles: []

@@ -1,0 +1,11 @@
+---
+
+# Can be used in "when" clauses to easily limit tasks to nodes of some role
+swarm_managers: "{{ groups.swarm_manager | default([]) }}"
+is_swarm_manager: "{{ 'swarm_manager' in group_names }}"
+swarm_workers: "{{ groups.swarm_worker | default([]) }}"
+is_swarm_worker: "{{ 'swarm_worker' in group_names }}"
+swarm_members: "{{ swarm_managers + swarm_workers }}"
+is_swarm_member: "{{ inventory_hostname in swarm_members }}"
+swarm_leader: "{{ (groups.swarm_manager | intersect(ansible_play_hosts_all))[0] | default(none) }}"
+is_swarm_leader: "{{ inventory_hostname == swarm_leader }}"

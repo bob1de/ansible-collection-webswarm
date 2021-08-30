@@ -1,0 +1,68 @@
+---
+
+# GENERAL
+
+# Under this directory, data of different swarm services will be stored and
+# bind-mounted into containers.
+# Specify without trailing slash.
+# Directories for individual services can be tweaked by the *_dir variables of the
+# different service roles.
+data_dir: /opt/swarm
+
+# Accounts to set up for Traefik dashboard, Docker registry and ELK stack.
+# If desired, the credentials for individual services can be overridden by variables
+# of the different service roles.
+#admin_users:
+#  - username: admin1
+#    password: password1
+#  - username: admin2
+#    password: password2
+admin_users: []
+
+
+# DOCKER & SWARM
+
+# Subnet of the internal docker_gwbridge network which connects all containers of
+# a node to the outside world.
+# If undefined or empty, the network auto-created by Docker (or you beforehand)
+# is left untouched.
+# When this variable is changed, an existing Swarm has to be destroyed manually
+# before running the role again. Otherwise you will experience undefined behavior.
+docker_gwbridge_subnet: 10.200.0.0/16
+
+# Subnet of the Docker ingress network (routing mesh)
+# If undefined or empty, the network auto-created by Docker is left untouched.
+# When this variable is changed, an existing Swarm has to be destroyed manually
+# before running the role again. Otherwise you will experience undefined behavior.
+docker_ingress_subnet: 10.201.0.0/16
+
+# Interface to use for inter-node Swarm communications (cluster management + data).
+# You can set any interface listened on by docker engine.
+# By default, the interface of the default IPv4 route will be used.
+# When these variables are changed, an existing Swarm has to be destroyed manually
+# before running the role again. Otherwise you will experience undefined behavior.
+swarm_interface: "{{ ansible_default_ipv4.interface }}"
+# Corresponding interface IP address
+swarm_address: "{{ hostvars[inventory_hostname].ansible_facts[swarm_interface].ipv4.address }}"
+# Port for Swarm management communication
+swarm_port: 2377
+
+# If true, nodes known by the Swarm leader with a node ID not matching any of the
+# managed Swarm members' IDs and which are in "down" state will be removed from
+# the Swarm.
+# This will clear out records of nodes which have left the Swarm but were not removed
+# using "docker node rm" on a manager.
+# These nodes can be identified by running "docker node ls" on a manager.
+swarm_remove_orphaned_nodes: true
+
+# If defined and not empty, this value is compared against the value shown after
+# "Swarm: " when running "docker system info". A mismatch will fail the play.
+swarm_ensure_local_node_state: active
+
+# Docker image of docker-socket-proxy for providing stripped down docker.sock access
+# to services needing it
+dockersocketproxy_image: "tecnativa/docker-socket-proxy:0.1.1"
+
+# Docker image used when a temporary network proxy is required to connect to
+# non-published services for execution of setup tasks.
+socat_image: "alpine/socat:latest"

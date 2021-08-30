@@ -1,0 +1,68 @@
+---
+
+# Docker image to use for deploying the private Docker registry.
+registry_image: "registry:2"
+
+# The registry containers need a shared secret for signing state that may be stored
+# with the client to protect against tampering.
+# REQUIRED
+#registry_http_secret: "insert secure random string here"
+
+# Credentials for authenticating with the registry.
+registry_users: "{{ admin_users }}"
+
+# These credentials are also accepted for authenticating to the registry.
+# They're used by the Swarm nodes and hosts in the registry_login group to log in.
+# REQUIRED
+#registry_username_internal: registry_internal
+#registry_password_internal: "insert random string here"
+
+# Restrict access to these IPs/subnets (comma-separated).
+# Make sure to include all Swarm members and hosts in the registry_login group.
+registry_ip_whitelist: "0.0.0.0/0"
+
+# Comma-separated list of Traefik entrypoints for Docker registry;
+# must be defined in traefik_entrypoints
+registry_traefik_entrypoints: registry
+
+# Rule for the registry Traefik HTTP router
+registry_traefik_router_rule: "Host(`{{ registry_fqdn }}`)"
+
+# This FQDN and port are used for contacting the registry and are part of the
+# registry_spec variable defined in vars/main.yml.
+registry_fqdn: "{{ hostvars[groups.traefik[0]].ansible_facts.fqdn }}"
+# Port for Docker registry (TLS).
+# This defaults to the port of the first entrypoint listed in
+# registry_traefik_entrypoints.
+registry_port: "{{ traefik_entrypoints[registry_traefik_entrypoints.split(',')[0].strip()].port }}"
+
+# Whether to generate a self-signed TLS certificate for the private Docker registry.
+# If you don't provide a key/certificate for the domain specified in registry_fqdn
+# yourself in the traefik-certs directory, this option should be enabled.
+registry_self_signed: false
+# Parameters for the self-signed certificate.
+# Available options and default values are documented in tasks/self-signed.yml.
+registry_self_signed_config:
+  key_path: registry-self-signed.key
+  csr_path: registry-self-signed.csr
+  cert_path: registry-self-signed.crt
+  subject:
+    commonName: "{{ registry_fqdn }}"
+  subject_alt_name:
+    - "DNS:{{ registry_fqdn }}"
+
+# This directory will be the root for any Docker registry-related files.
+# Unless configured differently (see below), pushed images will be stored in a
+# subdirectory of this.
+registry_dir: "{{ data_dir }}/registry"
+
+# This directory will store runtime data such as pushed images, but only if the
+# "local" volume driver is configured below. If a different driver is used, this
+# setting has no effect.
+registry_data_dir: "{{ registry_dir }}/data"
+# Docker volume configuration for the registry's data volume
+registry_data_volume_driver: local
+registry_data_volume_driver_options:
+  type: "none"
+  o: bind
+  device: "{{ registry_data_dir }}"

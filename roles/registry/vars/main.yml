@@ -1,0 +1,9 @@
+---
+
+# Helper variable to be hashed for detecting changed credentials in
+# tasks/system-services/02-registry/main.yml
+_registry_users_full: "{{ [{'username': registry_username_internal, 'password': registry_password_internal}] + registry_users }}"
+
+# This can be prepended to image names in order to indicate they're located in the
+# private Docker registry.
+registry_spec: "{{ registry_fqdn }}:{{ registry_port }}"

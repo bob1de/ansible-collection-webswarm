@@ -1,0 +1,44 @@
+---
+
+- hosts: all
+  vars_files:
+    - ./vars/webswarm-config.yml
+
+  tasks:
+
+    - name: Load helper variables by including roles with never tag and public=true
+      loop:
+        - bob1de.webswarm.swarm
+        - bob1de.webswarm.traefik
+        - bob1de.webswarm.registry
+      include_role:
+        name: "{{ item }}"
+        public: true
+        apply:
+          tags: [never]
+
+    - name: Log out from private Docker registry
+      run_once: true
+      delegate_to: localhost
+      community.docker.docker_login:
+        registry_url: "https://{{ registry_spec }}"
+        state: absent
+
+    - name: Remove self-signed CA of private Docker registry
+      when: registry_self_signed
+      run_once: true
+      delegate_to: localhost
+      become: true
+      ansible.builtin.file:
+        path: "/etc/docker/certs.d/{{ registry_spec }}"
+        state: absent
+
+    - name: Remove Swarm members from /etc/hosts on localhost
+      run_once: true
+      delegate_to: localhost
+      become: true
+      ansible.builtin.lineinfile:
+        dest: /etc/hosts
+        state: absent
+        regexp: >-
+          \#\s*bob1de\.webswarm\s+auto-added\s*$

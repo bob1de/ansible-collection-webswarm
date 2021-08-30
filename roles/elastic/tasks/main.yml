@@ -1,0 +1,615 @@
+---
+
+- name: Fail when no Swarm members are in elasticsearch group
+  when: "not groups.elasticsearch | default([]) | intersect(swarm_members)"
+  run_once: true
+  ansible.builtin.fail:
+
+- name: Fail when host is in elasticsearch group but is no Swarm member
+  when: "not is_swarm_member and 'elasticsearch' in group_names"
+  ansible.builtin.fail:
+
+- name: Fail when no host in elasticsearch group also is in elasticsearch_master group
+  when: "not groups.elasticsearch | intersect(groups.elasticsearch_master | default([]))"
+  run_once: true
+  ansible.builtin.fail:
+
+- name: Fail when host is in elasticsearch_master but not in elasticsearch group
+  when: "'elasticsearch_master' in group_names and 'elasticsearch' not in group_names"
+  ansible.builtin.fail:
+
+- name: Fail when no Swarm members are in kibana group
+  when: "not groups.kibana | default([]) | intersect(swarm_members)"
+  run_once: true
+  ansible.builtin.fail:
+
+- name: Fail when host is in kibana group but is no Swarm member
+  when: "not is_swarm_member and 'kibana' in group_names"
+  ansible.builtin.fail:
+
+
+- name: Create Elasticsearch directory
+  when: "'elasticsearch' in group_names"
+  ansible.builtin.file:
+    path: "{{ elasticsearch_dir }}"
+    state: directory
+
+- name: Create Elasticsearch data directory if local volume driver is used
+  when: >-
+    'elasticsearch' in group_names
+    and elasticsearch_data_volume_driver == 'local'
+  ansible.builtin.file:
+    path: "{{ elasticsearch_data_dir }}"
+    state: directory
+    # elasticsearch user in container is in group 0
+    mode: 0770
+
+- name: Store elasticsearch_node_name as fact for use in elasticsearch.yml
+  when: "'elasticsearch' in group_names"
+  ansible.builtin.set_fact:
+    elasticsearch_node_name_fact: "{{ elasticsearch_node_name }}"
+
+- name: Generate elasticsearch.yml configuration
+  when: "'elasticsearch' in group_names"
+  register: elasticsearch_config_write_result
+  ansible.builtin.template:
+    src: elasticsearch.yml.j2
+    dest: "{{ elasticsearch_dir }}/elasticsearch.yml"
+    # elasticsearch user in container is in group 0
+    mode: 0640
+    backup: true
+
+- name: Create Elasticsearch certificates directory
+  when: "'elasticsearch' in group_names"
+  ansible.builtin.file:
+    path: "{{ elasticsearch_dir }}/certs"
+    state: directory
+    mode: 0750
+
+- name: Generate self-signed TLS certificate for Elasticsearch inter-node communication
+  include_role:
+    name: bob1de.webswarm.self_signed
+    apply:
+      run_once: true
+      delegate_to: localhost
+  vars: {ss_config: "{{ elasticsearch_self_signed_config }}"}
+
+- name: Copy self-signed TLS certificate/key to Elasticsearch's certs directory
+  when: "'elasticsearch' in group_names"
+  loop:
+    - src: "{{ elasticsearch_self_signed_config.cert_path }}"
+      dest: "{{ elasticsearch_dir }}/certs/self-signed.crt"
+    - src: "{{ elasticsearch_self_signed_config.key_path }}"
+      dest: "{{ elasticsearch_dir }}/certs/self-signed.key"
+  register: elasticsearch_cert_write_result
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    backup: true
+
+
+- name: Retrieve current value of vm.max_map_count kernel variable
+  when: "'elasticsearch' in group_names"
+  changed_when: false
+  register: vm_max_map_count_result
+  ansible.builtin.command:
+    argv: [sysctl, --values, vm.max_map_count]
+
+- name: Show value of vm.max_map_count kernel variable
+  when: "'elasticsearch' in group_names"
+  ansible.builtin.debug:
+    msg:
+      - "Current: {{ vm_max_map_count_result.stdout }}"
+      - "Minimum required: {{ elasticsearch_min_vm_max_map_count }}"
+
+- when: >-
+    'elasticsearch' in group_names
+    and vm_max_map_count_result.stdout | int < elasticsearch_min_vm_max_map_count
+  block:
+
+    - name: Set vm.max_map_count to required value on boot if too low
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/99-elasticsearch-vm-max-map-count.conf
+        content: |
+          # Elasticsearch requires a minimum value for vm.max_map_count
+          # See https://www.elastic.co/guide/en/elasticsearch/reference/current/vm-max-map-count.html
+          vm.max_map_count = {{ elasticsearch_min_vm_max_map_count }}
+
+    - name: Apply vm.max_map_count setting now
+      ansible.builtin.command:
+        argv: [sysctl, --load, /etc/sysctl.d/99-elasticsearch-vm-max-map-count.conf]
+
+# elastic_elasticsearch.0.tkvm5jct01v5@deb10-man1    | bootstrap check failure [1] of [1]: max virtual memory areas vm.max_map_count [65530] is too low, increase to at least [262144]
+
+
+- name: Create Kibana directory
+  when: "'kibana' in group_names"
+  ansible.builtin.file:
+    path: "{{ kibana_dir }}"
+    state: directory
+
+- name: Create Kibana data directory if local volume driver is used
+  when: >-
+    'kibana' in group_names
+    and kibana_data_volume_driver == 'local'
+  ansible.builtin.file:
+    path: "{{ kibana_data_dir }}"
+    state: directory
+    # kibana user in container is in group 0
+    mode: 0770
+
+- name: Generate kibana.yml configuration
+  when: "'kibana' in group_names"
+  register: kibana_config_write_result
+  ansible.builtin.template:
+    src: kibana.yml.j2
+    dest: "{{ kibana_dir }}/kibana.yml"
+    # kibana user in container is in group 0
+    mode: 0640
+    backup: true
+
+
+- name: Create Filebeat directory
+  when: is_swarm_member
+  ansible.builtin.file:
+    path: "{{ filebeat_dir }}"
+    state: directory
+
+- name: Create Filebeat data directory if local volume driver is used
+  when: >-
+    is_swarm_member
+    and filebeat_data_volume_driver == 'local'
+  ansible.builtin.file:
+    path: "{{ filebeat_data_dir }}"
+    state: directory
+    # filebeat user in container is in group 0
+    mode: 0770
+
+- name: Generate filebeat.yml configuration
+  when: is_swarm_member
+  register: filebeat_config_write_result
+  ansible.builtin.template:
+    src: filebeat.yml.j2
+    dest: "{{ filebeat_dir }}/filebeat.yml"
+    # filebeat user in container is in group 0
+    mode: 0640
+    backup: true
+
+
+- name: Create encrypted attachable elastic Docker overlay network
+  when: is_swarm_leader
+  community.docker.docker_network:
+    name: elastic
+    attachable: true
+    driver: overlay
+    driver_options:
+      encrypted: "true"
+    ipam_config:
+      - subnet: "{{ elastic_subnet }}"
+        gateway: "{{ elastic_subnet | ipaddr('net') | ipaddr('1') | ipaddr('ip') }}"
+
+
+- name: Add elasticsearch=true label to Swarm nodes in the elasticsearch group
+  when: is_swarm_leader
+  with_inventory_hostnames: elasticsearch
+  community.docker.docker_node:
+    hostname: "{{ hostvars[item].ansible_facts.hostname }}"
+    labels: {elasticsearch: "true"}
+
+- name: Remove elasticsearch label from Swarm nodes not in the elasticsearch group
+  when: is_swarm_leader
+  with_inventory_hostnames: "swarm_manager:swarm_worker:!elasticsearch"
+  community.docker.docker_node:
+    hostname: "{{ hostvars[item].ansible_facts.hostname }}"
+    labels_to_remove: [elasticsearch]
+
+- name: Add kibana=true label to Swarm nodes in the kibana group
+  when: is_swarm_leader
+  with_inventory_hostnames: kibana
+  community.docker.docker_node:
+    hostname: "{{ hostvars[item].ansible_facts.hostname }}"
+    labels: {kibana: "true"}
+
+- name: Remove kibana label from Swarm nodes not in the kibana group
+  when: is_swarm_leader
+  with_inventory_hostnames: "swarm_manager:swarm_worker:!kibana"
+  community.docker.docker_node:
+    hostname: "{{ hostvars[item].ansible_facts.hostname }}"
+    labels_to_remove: [kibana]
+
+
+- name: Deploy Elastic stack to Swarm
+  when: is_swarm_leader
+  # For some reason, the stack deployment is not idempotent on second run, hence it
+  # has to be run twice, after which it doesn't report changed anymore.
+  loop: [null, null]
+  community.docker.docker_stack:
+    name: elastic
+    with_registry_auth: true
+    compose:
+      - version: "3.7"
+        networks:
+          elastic:
+            external: true
+          traefik-edge:
+            external: true
+        volumes:
+          elasticsearch_data:
+            driver: "{{ elasticsearch_data_volume_driver }}"
+            driver_opts: "{{ elasticsearch_data_volume_driver_options }}"
+          kibana_data:
+            driver: "{{ kibana_data_volume_driver }}"
+            driver_opts: "{{ kibana_data_volume_driver_options }}"
+          filebeat_data:
+            driver: "{{ filebeat_data_volume_driver }}"
+            driver_opts: "{{ filebeat_data_volume_driver_options }}"
+        services:
+          elasticsearch:
+            image: "{{ elasticsearch_image }}"
+            environment:
+              ES_JAVA_OPTS: "{{ elasticsearch_java_options }}"
+              ELASTIC_PASSWORD: "{{ elasticsearch_builtin_passwords.elastic }}"
+            ulimits:
+              # Set memlock unlimited to permit bootstrap.memory_lock=true.
+              memlock:
+                soft: -1
+                hard: -1
+            labels:
+              # Don't let Filebeat collect Elasticsearch logs to avoid infinite
+              # loops in case of errors.
+              - "co.elastic.logs/enabled=false"
+            deploy:
+              mode: global
+              placement:
+                constraints: ["node.labels.elasticsearch==true"]
+            networks: [elastic]
+            volumes:
+              - type: bind
+                source: "{{ elasticsearch_dir }}/elasticsearch.yml"
+                target: /usr/share/elasticsearch/config/elasticsearch.yml
+                read_only: true
+              - type: bind
+                source: "{{ elasticsearch_dir }}/certs"
+                target: /usr/share/elasticsearch/config/certs
+                read_only: true
+              - type: volume
+                source: elasticsearch_data
+                target: /usr/share/elasticsearch/data
+                volume:
+                  nocopy: true
+          kibana:
+            image: "{{ kibana_image }}"
+            labels:
+              # Don't let Filebeat collect Kibana logs to avoid infinite
+              # loops in case of errors.
+              - "co.elastic.logs/enabled=false"
+            deploy:
+              labels:
+                - "traefik.enable=true"
+                - "traefik.http.routers.kibana.entrypoints={{ kibana_traefik_entrypoints }}"
+                - "traefik.http.routers.kibana.rule={{ kibana_traefik_router_rule }}"
+                - "traefik.http.routers.kibana.tls=true"
+                - "traefik.http.routers.kibana.middlewares=kibana-ip-whitelist"
+                - "traefik.http.middlewares.kibana-ip-whitelist.ipwhitelist.sourcerange={{ kibana_ip_whitelist }}"
+                - "traefik.http.services.kibana.loadbalancer.server.port=5601"
+              mode: global
+              placement:
+                constraints: ["node.labels.kibana==true"]
+            networks: [elastic, traefik-edge]
+            volumes:
+              - type: bind
+                source: "{{ kibana_dir }}/kibana.yml"
+                target: /usr/share/kibana/config/kibana.yml
+                read_only: true
+              - type: volume
+                source: kibana_data
+                target: /usr/share/kibana/data
+                volume:
+                  nocopy: true
+          filebeat:
+            image: "{{ filebeat_image }}"
+            # Run as root to grant access to docker.sock
+            user: root
+            #environment:
+            labels:
+              # Don't let Filebeat collect its own logs to avoid infinite loops in
+              # case of errors.
+              - "co.elastic.logs/enabled=false"
+            deploy:
+              mode: global
+            networks: [elastic]
+            volumes:
+              - type: bind
+                source: "{{ filebeat_dir }}/filebeat.yml"
+                target: /usr/share/filebeat/filebeat.yml
+                read_only: true
+              - type: bind
+                source: /var/lib/docker/containers
+                target: /var/lib/docker/containers
+                read_only: true
+              - type: bind
+                source: /var/run/docker.sock
+                target: /var/run/docker.sock
+                read_only: true
+              - type: volume
+                source: filebeat_data
+                target: /usr/share/filebeat/data
+                volume:
+                  nocopy: true
+    resolve_image: changed
+
+
+# Normally one would assume community.docker.docker_swarm_service with
+# force_update=true would be perfect for this, but that module has default values
+# for lots of its parameters, making it unpractical to just force-update without
+# redundantly specifying all the service options.
+# In future, maybe docker_swarm_service should be used for all system services
+# instead of docker_stack in the first place.
+
+- name: Force-update Elasticsearch service if its configuration has changed
+  when: >-
+    is_swarm_leader
+    and (
+      groups.elasticsearch | map('extract', hostvars, ['elasticsearch_config_write_result', 'changed']) | select
+      or groups.elasticsearch | map('extract', hostvars, ['elasticsearch_cert_write_result', 'changed']) | select
+    )
+  ansible.builtin.command:
+    argv: [docker, service, update, --force, elastic_elasticsearch]
+
+- name: Force-update Kibana service if its configuration has changed
+  when: >-
+    is_swarm_leader
+    and groups.kibana | map('extract', hostvars, ['kibana_config_write_result', 'changed']) | select
+  ansible.builtin.command:
+    argv: [docker, service, update, --force, elastic_kibana]
+
+- name: Force-update Filebeat service if its configuration has changed
+  when: >-
+    is_swarm_leader
+    and swarm_members | map('extract', hostvars, ['filebeat_config_write_result', 'changed']) | select
+  ansible.builtin.command:
+    argv: [docker, service, update, --force, elastic_filebeat]
+
+
+- when: is_swarm_leader
+  block:
+
+    - name: Create temporary proxy to Elasticsearch for executing setup tasks
+      include_role:
+        name: bob1de.webswarm.proxy_container
+      vars:
+        listen_port: 19200
+        proxy_network: elastic
+        proxy_host: elasticsearch.elastic
+        proxy_port: 9200
+
+    - name: Wait for Elasticsearch to become reachable
+      register: elasticsearch_status_result
+      until: elasticsearch_status_result is success
+      retries: 60
+      delay: 10
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:19200/_cat/nodes"
+        url_username: elastic
+        url_password: "{{ elasticsearch_builtin_passwords.elastic }}"
+        force_basic_auth: true
+
+    - name: Set passwords of built-in Elasticsearch user accounts
+      register: elasticsearch_password_result
+      changed_when: elasticsearch_password_result is success
+      loop: "{{ elasticsearch_builtin_passwords | difference(['elastic']) }}"
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:19200/_security/user/{{ item }}/_password"
+        url_username: elastic
+        url_password: "{{ elasticsearch_builtin_passwords.elastic }}"
+        force_basic_auth: true
+        method: POST
+        body_format: json
+        body:
+          password: "{{ elasticsearch_builtin_passwords[item] }}"
+
+    - name: Set up filebeat_writer Elasticsearch role
+      register: elasticsearch_role_result
+      changed_when: elasticsearch_role_result is success
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:19200/_security/role/filebeat_writer"
+        url_username: elastic
+        url_password: "{{ elasticsearch_builtin_passwords.elastic }}"
+        force_basic_auth: true
+        method: POST
+        body_format: json
+        body:
+          # Privileges taken from
+          # https://www.elastic.co/guide/en/beats/filebeat/current/privileges-to-publish-events.html
+          cluster:
+            - monitor
+            - read_ilm
+            - read_pipeline
+          indices:
+            - names: ["filebeat-*"]
+              privileges: [create_doc, create_index, view_index_metadata]
+
+    - name: Create or update custom Elasticsearch user accounts
+      register: elasticsearch_user_result
+      changed_when: elasticsearch_user_result is success
+      loop: "{{ elasticsearch_users + [{'username': filebeat_username, 'password': filebeat_password, 'elasticsearch_roles': ['filebeat_writer']}] }}"
+      no_log: true
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:19200/_security/user/{{ item.username }}"
+        url_username: elastic
+        url_password: "{{ elasticsearch_builtin_passwords.elastic }}"
+        force_basic_auth: true
+        method: POST
+        body_format: json
+        body:
+          password: "{{ item.password }}"
+          full_name: "{{ item.full_name | default('') }}"
+          email: "{{ item.email | default('') }}"
+          metadata: "{{ item.elasticsearch_metadata | default({}) }}"
+          roles: "{{ item.elasticsearch_roles | default(elasticsearch_default_roles) }}"
+
+    - name: Retrieve list of user accounts in Elasticsearch
+      register: elasticsearch_users_result
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:19200/_security/user"
+        url_username: elastic
+        url_password: "{{ elasticsearch_builtin_passwords.elastic }}"
+        force_basic_auth: true
+
+    - name: Find non-reserved Elasticsearch user accounts which are not defined in elasticsearch_users
+      ansible.builtin.set_fact:
+        elasticsearch_stale_usernames: >-
+          {{
+            elasticsearch_users_result.json
+            | difference(
+              elasticsearch_users_result.json.values()
+              | rejectattr('metadata._reserved', 'undefined')
+              | selectattr('metadata._reserved')
+              | map(attribute='username')
+            )
+            | difference(elasticsearch_users | map(attribute='username'))
+            | difference([filebeat_username])
+          }}
+
+    - name: Show stale Elasticsearch user accounts if any
+      when: elasticsearch_stale_usernames
+      ansible.builtin.debug:
+        msg: >-
+          Accounts found in Elasticsearch which are not defined in elasticsearch_users:
+          [{{ elasticsearch_stale_usernames | join(', ') }}]
+
+    - name: Delete stale Elasticsearch user accounts if requested
+      when: elasticsearch_delete_stale_users
+      loop: "{{ elasticsearch_stale_usernames }}"
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:19200/_security/user/{{ item }}"
+        url_username: elastic
+        url_password: "{{ elasticsearch_builtin_passwords.elastic }}"
+        force_basic_auth: true
+        method: DELETE
+
+
+- when: is_swarm_leader
+  block:
+
+    - name: Create temporary proxy to Kibana for executing setup tasks
+      include_role:
+        name: bob1de.webswarm.proxy_container
+      vars:
+        listen_port: 15601
+        proxy_network: elastic
+        proxy_host: kibana.elastic
+        proxy_port: 5601
+
+    - name: Wait for Kibana to become reachable
+      register: kibana_status_result
+      until: kibana_status_result is success
+      retries: 60
+      delay: 10
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:15601/api/status"
+        url_username: elastic
+        url_password: "{{ elasticsearch_builtin_passwords.elastic }}"
+        force_basic_auth: true
+
+
+# TODO:
+# A bug in Ansible makes any_errors_fatal/max_fail_percentage ineffective when a
+# task inside a block fails and the block also has an always branch.
+# Tracking issue: https://github.com/ansible/ansible/issues/31543
+- when: is_swarm_leader
+  block:
+
+    - name: Run 'filebeat version'
+      register: filebeat_version_result
+      community.docker.docker_container:
+        name: filebeat_version
+        image: "{{ filebeat_image }}"
+        command: "filebeat version"
+        detach: false
+        container_default_behavior: no_defaults
+
+    - name: Determine current Filebeat version from command output
+      ansible.builtin.set_fact:
+        filebeat_version: >-
+          {{
+            filebeat_version_result.container.Output
+            | regex_search('filebeat\s+version\s+(\d+\.\d+\.\d+)\s', '\1', ignorecase=true, multiline=true)
+            | first
+          }}
+
+    - name: "Try loading previously saved {{ filebeat_setup_last_version_file }} state file"
+      with_fileglob:
+        - "{{ filebeat_setup_last_version_file }}"
+      ansible.builtin.set_fact:
+        filebeat_setup_last_version: >-
+          {{
+            lookup('file', item)
+            | regex_findall('^\s*[^#\s].*$', multiline=true)
+            | join('\n')
+            | from_json
+          }}
+
+    - name: Show Filebeat versions
+      ansible.builtin.debug:
+        msg:
+          - "Current version: {{ filebeat_version }}"
+          - "Setup last run for version: {{ filebeat_setup_last_version | default('unknown') }}"
+
+    - when: >-
+        filebeat_setup_last_version is not defined
+        or filebeat_version != filebeat_setup_last_version
+      block:
+
+        - name: Create temporary filebeat.yml for running setup procedures
+          ansible.builtin.template:
+            src: filebeat-setup.yml.j2
+            dest: "{{ filebeat_dir }}/filebeat-setup.yml"
+            mode: 0640
+            backup: true
+
+        - name: Set up Filebeat index templates and Kibana dashboards
+          community.docker.docker_container:
+            name: filebeat_setup
+            image: "{{ filebeat_image }}"
+            command: "filebeat setup -e"
+            networks:
+              - name: elastic
+            network_mode: elastic
+            volumes:
+              - "{{ filebeat_dir }}/filebeat-setup.yml:/usr/share/filebeat/filebeat.yml:ro"
+            detach: false
+            container_default_behavior: no_defaults
+
+        - name: "Write {{ filebeat_setup_last_version_file }} state file with new version"
+          delegate_to: localhost
+          ansible.builtin.copy:
+            dest: "{{ filebeat_setup_last_version_file }}"
+            content: |
+              # Remove this file to force 'filebeat setup' to run even if version hasn't changed.
+
+              {{ filebeat_version | to_json }}
+
+  always:
+
+    - name: Clean up temporary Docker containers
+      loop:
+        - filebeat_version
+        - filebeat_setup
+      community.docker.docker_container:
+        name: "{{ item }}"
+        state: absent
+        container_default_behavior: no_defaults
+
+
+- name: Wait for Kibana to become reachable via Traefik
+  when: is_swarm_leader
+  register: kibana_status_result
+  until: kibana_status_result is success
+  retries: 60
+  delay: 10
+  ansible.builtin.uri:
+    url: "{{ kibana_url }}/api/status"
+    # Don't authenticate on insecure connection
+    status_code: [401]
+    validate_certs: false

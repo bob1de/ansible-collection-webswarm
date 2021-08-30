@@ -1,0 +1,29 @@
+# {{ ansible_managed }}
+
+node.name: {{ elasticsearch_node_name | to_json }}
+
+# Resolve all Elasticsearch containers via DNS.
+discovery.seed_hosts: tasks.elasticsearch.elastic
+
+cluster.name: {{ elasticsearch_cluster_name | to_json }}
+
+# Set hosts in elasticsearch_master group as master-eligible nodes.
+# The elasticsearch_node_name_fact is set for hosts in elasticsearch group beforehand.
+cluster.initial_master_nodes: {{ groups.elasticsearch_master | map('extract', hostvars, 'elasticsearch_node_name_fact') | to_json }}
+
+# Prevent swapping of memory pages if configured
+bootstrap.memory_lock: {{ elasticsearch_memory_lock | to_json }}
+
+# Accept connections from other hosts in the elastic network
+network.host: 0.0.0.0
+
+# Enable basic authentication
+xpack.security.enabled: true
+# Enable TLS for inter-node communication because it's required in production mode
+xpack.security.transport.ssl.enabled: true
+# All nodes use the same certificate, so ignore hostname and just verify CA
+xpack.security.transport.ssl.verification_mode: certificate
+# certs directory is bind-mounted into container
+xpack.security.transport.ssl.key: ./certs/self-signed.key
+xpack.security.transport.ssl.certificate: ./certs/self-signed.crt
+xpack.security.transport.ssl.certificate_authorities: [./certs/self-signed.crt]

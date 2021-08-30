@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+#
+# Special configuration used for executing "filebeat setup" with superuser privileges.
+
+output.elasticsearch:
+  hosts: ["elasticsearch.elastic:9200"]
+  username: elastic
+  password: {{ elasticsearch_builtin_passwords.elastic | to_json }}
+
+setup.kibana:
+  host: kibana.elastic:5601

@@ -1,0 +1,46 @@
+---
+
+- name: Insert default values into ss_config dict
+  ansible.builtin.set_fact:
+    _ss_config: "{{ ss_config_defaults | combine(ss_config) }}"
+
+- name: Query information about existing self-signed certificate
+  register: x509_info_result
+  ignore_errors: true
+  community.crypto.x509_certificate_info:
+    path: "{{ _ss_config.cert_path }}"
+    valid_at:
+      min_validity: "{{ _ss_config.min_validity }}"
+
+- when: >-
+    x509_info_result.failed
+    or not x509_info_result.valid_at.min_validity
+    or x509_info_result.subject | default({}, true) != _ss_config.subject
+    or x509_info_result.subject_alt_name | default([], true) != _ss_config.subject_alt_name
+  block:
+
+    - name: Generate private key for self-signed certificate
+      community.crypto.openssl_privatekey:
+        path: "{{ _ss_config.key_path }}"
+        size: "{{ _ss_config.key_size | default(omit) }}"
+        type: "{{ _ss_config.key_type | default(omit) }}"
+        backup: "{{ _ss_config.backup }}"
+
+    - name: Generate CSR for self-signed certificate
+      community.crypto.openssl_csr:
+        path: "{{ _ss_config.csr_path }}"
+        privatekey_path: "{{ _ss_config.key_path }}"
+        subject: "{{ _ss_config.subject }}"
+        subject_alt_name: "{{ _ss_config.subject_alt_name }}"
+        use_common_name_for_san: false
+        backup: "{{ _ss_config.backup }}"
+
+    - name: Generate self-signed certificate
+      community.crypto.x509_certificate:
+        provider: selfsigned
+        path: "{{ _ss_config.cert_path }}"
+        privatekey_path: "{{ _ss_config.key_path }}"
+        csr_path: "{{ _ss_config.csr_path }}"
+        selfsigned_digest: "{{ _ss_config.digest | default(omit) }}"
+        selfsigned_not_after: "{{ _ss_config.validity }}"
+        backup: "{{ _ss_config.backup }}"

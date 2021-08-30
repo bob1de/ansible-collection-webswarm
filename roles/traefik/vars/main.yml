@@ -1,0 +1,15 @@
+---
+
+traefik_internal_cli_args:
+  - --accesslog
+  - "--log.level={{ traefik_log_level }}"
+  - --providers.docker
+  - --providers.docker.endpoint=tcp://dockersocketproxy.traefik-docker:2375
+  - --providers.docker.swarmMode
+  # Services need traefik.enable=true label for being respected
+  - --providers.docker.exposedByDefault=false
+  # Contact discovered services via this network by default
+  - --providers.docker.network=traefik-edge
+  - --providers.file.directory=/dynconfig
+  - --providers.file.watch
+  - --api

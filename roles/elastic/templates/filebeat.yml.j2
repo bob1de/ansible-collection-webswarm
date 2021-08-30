@@ -1,0 +1,21 @@
+# {{ ansible_managed }}
+
+filebeat.config:
+  modules:
+    path: "${path.config}/modules.d/*.yml"
+    reload.enabled: false
+
+# Logging can be configured per container by applying Docker labels.
+# See https://www.elastic.co/guide/en/beats/filebeat/current/configuration-autodiscover-hints.html
+filebeat.autodiscover:
+  providers:
+    - type: docker
+      hints.enabled: true
+
+processors:
+  - add_cloud_metadata: ~
+
+output.elasticsearch:
+  hosts: ["elasticsearch.elastic:9200"]
+  username: {{ filebeat_username | to_json }}
+  password: {{ filebeat_password | to_json }}

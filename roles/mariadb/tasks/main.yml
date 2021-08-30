@@ -1,0 +1,121 @@
+---
+
+- name: Fail when mariadb group has not exactly one member
+  when: "groups.mariadb | default([]) | length != 1"
+  run_once: true
+  ansible.builtin.fail:
+    msg: >-
+      Group mariadb has {{ groups.mariadb | default([]) | length }} members.
+
+- name: Fail when host is in mariadb group but is no Swarm member
+  when: "not is_swarm_member and 'mariadb' in group_names"
+  ansible.builtin.fail:
+
+
+- name: Create MariaDB directory
+  when: "'mariadb' in group_names"
+  ansible.builtin.file:
+    path: "{{ mariadb_dir }}"
+    state: directory
+
+- name: Create MariaDB data directory if local volume driver is used
+  when: >-
+    'mariadb' in group_names
+    and mariadb_data_volume_driver == 'local'
+  ansible.builtin.file:
+    path: "{{ mariadb_data_dir }}"
+    state: directory
+    mode: 0770
+
+
+- name: Create encrypted attachable mariadb Docker overlay network
+  when: is_swarm_leader
+  community.docker.docker_network:
+    name: mariadb
+    attachable: true
+    driver: overlay
+    driver_options:
+      encrypted: "true"
+    ipam_config:
+      - subnet: "{{ mariadb_subnet }}"
+        gateway: "{{ mariadb_subnet | ipaddr('net') | ipaddr('1') | ipaddr('ip') }}"
+
+
+- name: Add mariadb=true label to Swarm nodes in the mariadb group
+  when: is_swarm_leader
+  with_inventory_hostnames: mariadb
+  community.docker.docker_node:
+    hostname: "{{ hostvars[item].ansible_facts.hostname }}"
+    labels: {mariadb: "true"}
+
+- name: Remove mariadb label from Swarm nodes not in the mariadb group
+  when: is_swarm_leader
+  with_inventory_hostnames: "swarm_manager:swarm_worker:!mariadb"
+  community.docker.docker_node:
+    hostname: "{{ hostvars[item].ansible_facts.hostname }}"
+    labels_to_remove: [mariadb]
+
+
+- name: Deploy MariaDB to Swarm
+  when: is_swarm_leader
+  # For some reason, the stack deployment is not idempotent on second run, hence it
+  # has to be run twice, after which it doesn't report changed anymore.
+  loop: [null, null]
+  community.docker.docker_stack:
+    name: mariadb
+    with_registry_auth: true
+    compose:
+      - version: "3.7"
+        networks:
+          mariadb:
+            external: true
+        volumes:
+          mariadb_data:
+            driver: "{{ mariadb_data_volume_driver }}"
+            driver_opts: "{{ mariadb_data_volume_driver_options }}"
+        services:
+          db:
+            image: "{{ mariadb_image }}"
+            environment:
+              MARIADB_ROOT_PASSWORD: "{{ mariadb_root_password }}"
+            labels:
+              - "co.elastic.logs/module=mysql"
+              - "co.elastic.logs/fileset.stdout=slowlog"
+              - "co.elastic.logs/fileset.stderr=error"
+            deploy:
+              mode: global
+              placement:
+                constraints: ["node.labels.mariadb==true"]
+            networks: [mariadb]
+            volumes:
+              - type: volume
+                source: mariadb_data
+                target: /var/lib/mysql
+                volume:
+                  nocopy: true
+    resolve_image: changed
+
+
+- when: is_swarm_leader
+  block:
+
+    - name: Create temporary proxy to MariaDB for executing setup tasks
+      include_role:
+        name: bob1de.webswarm.proxy_container
+      vars:
+        listen_port: 13306
+        proxy_network: mariadb
+        proxy_host: db.mariadb
+        proxy_port: 3306
+
+    - name: Wait for MariaDB to become reachable
+      register: mariadb_status_result
+      until: mariadb_status_result is success
+      retries: 60
+      delay: 5
+      community.mysql.mysql_info:
+        login_host: 127.0.0.1
+        login_port: 13306
+        login_user: root
+        login_password: "{{ mariadb_root_password }}"
+        filter: version

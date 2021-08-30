@@ -1,0 +1,22 @@
+---
+
+- run_once: true
+  delegate_to: localhost
+  block:
+
+    - name: "Determine real path of {{ secrets_file }}"
+      ansible.builtin.set_fact:
+        secrets_file_real: "{{ secrets_file | realpath }}"
+
+    - name: "Create directory {{ secrets_file_real | dirname }} for storing the secrets file in"
+      ansible.builtin.file:
+        path: "{{ secrets_file_real | dirname }}"
+        state: directory
+
+    - name: "Generate secrets for different services and store in {{ secrets_file_real }} (replace_secrets_file={{ replace_secrets_file }})"
+      when: "replace_secrets_file or not query('fileglob', secrets_file | realpath)"
+      ansible.builtin.template:
+        src: webswarm-secrets.yml.j2
+        dest: "{{ secrets_file_real }}"
+        mode: 0640
+        backup: true

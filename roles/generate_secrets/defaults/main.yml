@@ -1,0 +1,5 @@
+---
+
+secrets_file: "{{ playbook_dir }}/vars/webswarm-secrets.yml"
+replace_secrets_file: false
+admin_usernames: [admin]

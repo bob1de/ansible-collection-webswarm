@@ -1,0 +1,291 @@
+---
+
+- name: Fail when no Swarm members are in traefik group
+  when: "not groups.traefik | default([]) | intersect(swarm_members)"
+  run_once: true
+  ansible.builtin.fail:
+
+- name: Fail when host is in traefik group but is no Swarm member
+  when: "not is_swarm_member and 'traefik' in group_names"
+  ansible.builtin.fail:
+
+
+- name: Create Traefik TLS certificates directory
+  when: "'traefik' in group_names"
+  ansible.builtin.file:
+    path: "{{ traefik_dir }}/certs"
+    state: directory
+    mode: 0700
+
+- name: Create Traefik dynamic configuration directory
+  when: "'traefik' in group_names"
+  ansible.builtin.file:
+    path: "{{ traefik_dir }}/dynconfig"
+    state: directory
+
+
+- name: Render custom Traefik configuration files from *.{yml|yaml|toml} templates in traefik-dynconfig directory
+  when: "'traefik' in group_names"
+  with_fileglob:
+    - "traefik-dynconfig/*.yml"
+    - "traefik-dynconfig/*.yaml"
+    - "traefik-dynconfig/*.toml"
+  ansible.builtin.template:
+    src: "{{ item }}"
+    dest: "{{ traefik_dir }}/dynconfig/"
+
+
+- name: Find TLS certificate files (*.crt) in traefik-certs directory
+  run_once: true
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    traefik_tls_certs: "{{ query('fileglob', 'traefik-certs/*.crt') | map('basename') | map('splitext') | map('first') }}"
+
+- name: Stat corresponding key files of TLS certificates
+  run_once: true
+  delegate_to: localhost
+  register: traefik_tls_key_stat_result
+  loop: "{{ traefik_tls_certs }}"
+  ansible.builtin.stat:
+    path: "traefik-certs/{{ item }}.key"
+
+- name: Ensure key files exist for all TLS certificates
+  run_once: true
+  delegate_to: localhost
+  loop: "{{ traefik_tls_certs | zip(traefik_tls_key_stat_result.results | map(attribute='stat') | map(attribute='exists', default=false)) }}"
+  ansible.builtin.assert:
+    that: ["{{ item[1] }}"]
+    fail_msg: "TLS key file traefik-certs/{{ item[0] }}.key is missing"
+    quiet: true
+
+- name: Copy TLS certificates to Traefik's certs directory
+  when: "'traefik' in group_names"
+  register: traefik_tls_cert_copy_result
+  loop: "{{ traefik_tls_certs }}"
+  ansible.builtin.copy:
+    src: "traefik-certs/{{ item }}.crt"
+    dest: "{{ traefik_dir }}/certs/"
+    backup: true
+
+- name: Copy TLS keys to Traefik's certs directory
+  when: "'traefik' in group_names"
+  register: traefik_tls_key_copy_result
+  loop: "{{ traefik_tls_certs }}"
+  ansible.builtin.copy:
+    src: "traefik-certs/{{ item }}.key"
+    dest: "{{ traefik_dir }}/certs/"
+    backup: true
+
+- name: Generate Traefik base TLS configuration
+  when: "'traefik' in group_names"
+  ansible.builtin.template:
+    src: tls-base.yml.j2
+    dest: "{{ traefik_dir }}/dynconfig/tls-base.yml"
+    backup: true
+
+- name: Touch Traefik configuration to trigger certificate reloading
+  when: >-
+    'traefik' in group_names
+    and (traefik_tls_cert_copy_result.changed or traefik_tls_key_copy_result.changed)
+  ansible.builtin.file:
+    path: "{{ traefik_dir }}/dynconfig/tls-base.yml"
+    state: touch
+
+
+- when: is_swarm_leader
+  block:
+
+    - name: Retrieve info of current traefik_traefik Swarm service
+      register: traefik_service_info_result
+      community.docker.docker_swarm_service_info:
+        name: traefik_traefik
+
+    - name: Extract facts about currently deployed Traefik API users configuration
+      when: >-
+        traefik_service_info_result.exists
+        and traefik_service_info_result.service.Spec.Labels['ansible.api-users-hash'] is defined
+      ansible.builtin.set_fact:
+        traefik_api_users_hash: "{{ traefik_service_info_result.service.Spec.Labels['ansible.api-users-hash'] }}"
+        traefik_api_users_config: "{{ traefik_service_info_result.service.Spec.Labels['traefik.http.middlewares.api-auth.basicauth.users'] }}"
+
+    - name: Hash Traefik API users configuration for change detection
+      register: traefik_api_users_hash_result
+      bob1de.webswarm.data_hash:
+        data: "{{ traefik_api_users }}"
+        previous_hash: "{{ traefik_api_users_hash | default(omit) }}"
+
+    - when: >-
+        traefik_api_users_config is not defined
+        or traefik_api_users_hash_result.data_changed
+      block:
+
+        - name: Generate Traefik API users configuration if changed
+          delegate_to: localhost
+          register: traefik_api_users_htpasswd_result
+          changed_when: false
+          # Hide passwords
+          no_log: true
+          loop: "{{ traefik_api_users }}"
+          ansible.builtin.command:
+            argv: ["htpasswd", "-nbB", "{{ item.username }}", "{{ item.password }}"]
+
+        - name: Store facts about changed Traefik API users configuration
+          ansible.builtin.set_fact:
+            traefik_api_users_hash: "{{ traefik_api_users_hash_result.hash }}"
+            traefik_api_users_config: "{{ traefik_api_users_htpasswd_result.results | map(attribute='stdout') | join(',') }}"
+
+
+- name: Create encrypted attachable traefik-edge Docker overlay network for proxying requests to user applications
+  when: is_swarm_leader
+  community.docker.docker_network:
+    name: traefik-edge
+    attachable: true
+    driver: overlay
+    driver_options:
+      encrypted: "true"
+    ipam_config:
+      - subnet: "{{ traefik_edge_subnet }}"
+        gateway: "{{ traefik_edge_subnet | ipaddr('net') | ipaddr('1') | ipaddr('ip') }}"
+
+
+- name: Add traefik=true label to Swarm nodes in the traefik group
+  when: is_swarm_leader
+  with_inventory_hostnames: traefik
+  community.docker.docker_node:
+    hostname: "{{ hostvars[item].ansible_facts.hostname }}"
+    labels: {traefik: "true"}
+
+- name: Remove traefik label from Swarm nodes not in the traefik group
+  when: is_swarm_leader
+  with_inventory_hostnames: "swarm_manager:swarm_worker:!traefik"
+  community.docker.docker_node:
+    hostname: "{{ hostvars[item].ansible_facts.hostname }}"
+    labels_to_remove: [traefik]
+
+
+- name: Build list of Traefik CLI arguments defining the entrypoints
+  when: is_swarm_leader
+  run_once: true
+  delegate_to: localhost
+  loop: "{{ traefik_entrypoints | dictsort }}"
+  ansible.builtin.set_fact:
+    traefik_entrypoint_cli_args: >-
+      {{
+        traefik_entrypoint_cli_args | default([]) + [
+          '--entrypoints.{}.address=:{}'.format(item[0], item[1].port)
+        ]
+      }}
+
+- name: Build list of port mappings for traefik_traefik Swarm service
+  when: is_swarm_leader
+  run_once: true
+  delegate_to: localhost
+  loop: "{{ traefik_entrypoints | dictsort }}"
+  ansible.builtin.set_fact:
+    # Publish ports in host mode (circumventing the ingress overlay network) in
+    # order to get correct source IPs for whitelisting.
+    # See https://github.com/moby/moby/issues/25526
+    traefik_service_ports: >-
+      {{
+        traefik_service_ports | default([]) + [{
+          'published': item[1].port,
+          'target': item[1].port,
+          'protocol': 'tcp',
+          'mode': 'host',
+        }]
+      }}
+
+
+- name: Deploy Traefik to Swarm
+  when: is_swarm_leader
+  # For some reason, the stack deployment is not idempotent on second run, hence it
+  # has to be run twice, after which it doesn't report changed anymore.
+  loop: [null, null]
+  community.docker.docker_stack:
+    name: traefik
+    with_registry_auth: true
+    compose:
+      - version: "3.7"
+        networks:
+          # Encrypted overlay network connecting traefik to docker-socket-proxy
+          traefik-docker:
+            name: traefik-docker
+            driver: overlay
+            driver_opts:
+              encrypted: "true"
+            ipam:
+              config:
+                - subnet: "{{ traefik_dockersocketproxy_subnet }}"
+          traefik-edge:
+            external: true
+        services:
+          dockersocketproxy:
+            image: "{{ dockersocketproxy_image }}"
+            # List of required API endpoints gotten from
+            # https://github.com/traefik/traefik/issues/4174#issuecomment-439944216
+            environment:
+              NETWORKS: 1
+              SERVICES: 1
+              TASKS: 1
+            deploy:
+              mode: global
+              placement:
+                constraints: ["node.role==manager"]
+            networks: [traefik-docker]
+            volumes:
+              - type: bind
+                source: /var/run/docker.sock
+                target: /var/run/docker.sock
+                # Does still allow writing to the socket, only prevents deletion
+                read_only: true
+          traefik:
+            depends_on:
+              - dockersocketproxy
+            image: "{{ traefik_image }}"
+            command: "{{ traefik_internal_cli_args + traefik_entrypoint_cli_args | default([]) + traefik_extra_cli_args }}"
+            labels:
+              - "co.elastic.logs/module=traefik"
+              - "co.elastic.logs/fileset.stdout=access"
+              - "co.elastic.logs/fileset.stderr=error"
+            deploy:
+              labels:
+                # Enable this service to provide API/dashboard access
+                - "traefik.enable=true"
+                - "traefik.http.routers.api.entrypoints={{ traefik_api_entrypoints }}"
+                - "traefik.http.routers.api.rule={{ traefik_api_router_rule }}"
+                - "traefik.http.routers.api.tls=true"
+                - "traefik.http.routers.api.service=api@internal"
+                - "traefik.http.routers.api.middlewares=api-ip-whitelist,api-auth"
+                - "traefik.http.middlewares.api-ip-whitelist.ipwhitelist.sourcerange={{ traefik_api_ip_whitelist }}"
+                # Authentication using hashed credentials from traefik_api_users.
+                # Docker-compose expands environment variables, hence $ must be escaped.
+                - "traefik.http.middlewares.api-auth.basicauth.users={{ traefik_api_users_config | replace('$', '$$') }}"
+                # Mandatory in swarm mode, but actually not used
+                # (see https://github.com/traefik/traefik/issues/5732)
+                - "traefik.http.services.api.loadbalancer.server.port=8080"
+                # Allows detecting changes of traefik_api_users variable
+                - "ansible.api-users-hash={{ traefik_api_users_hash }}"
+              # Use global (1 instance per node) instead of replicated; see ports
+              # section below for more details on why.
+              mode: global
+              placement:
+                constraints: ["node.labels.traefik==true"]
+            networks: [traefik-docker, traefik-edge]
+            ports: "{{ traefik_service_ports | default([]) }}"
+            volumes:
+              - type: bind
+                source: "{{ traefik_dir }}/certs"
+                target: /certs
+                read_only: true
+              - type: bind
+                source: "{{ traefik_dir }}/dynconfig"
+                target: /dynconfig
+                read_only: true
+    resolve_image: changed
+
+
+- name: Wait for Traefik's ports to become reachable
+  when: "'traefik' in group_names"
+  loop: "{{ traefik_entrypoints.values() | map(attribute='port') | sort }}"
+  ansible.builtin.wait_for:
+    port: "{{ item }}"

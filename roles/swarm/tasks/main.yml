@@ -1,0 +1,19 @@
+---
+
+- any_errors_fatal: true
+  block:
+
+    - name: Perform Swarm sanity checks
+      include_role:
+        name: bob1de.webswarm.swarm_sanity
+
+    - name: Set up Docker Swarm
+      when: is_swarm_member
+      include_tasks: ./swarm-setup.yml
+
+    - name: "Create root directory for system service data: {{ data_dir }}"
+      when: is_swarm_member
+      ansible.builtin.file:
+        path: "{{ data_dir }}"
+        state: directory
+        mode: 0700

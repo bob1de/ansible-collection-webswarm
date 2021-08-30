@@ -1,0 +1,8 @@
+---
+
+ss_config_defaults:
+  subject: {}
+  subject_alt_name: []
+  min_validity: "+90d"
+  validity: "+365d"
+  backup: true

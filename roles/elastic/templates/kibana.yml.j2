@@ -1,0 +1,22 @@
+# {{ ansible_managed }}
+
+elasticsearch.hosts: http://elasticsearch.elastic:9200
+elasticsearch.username: kibana_system
+elasticsearch.password: {{ elasticsearch_builtin_passwords.kibana_system | to_json }}
+
+server.name: {{ kibana_server_name | to_json }}
+server.uuid: {{ kibana_server_uuid | to_json }}
+# Allow hosts in the elastic and traefik-edge networks to connect
+server.host: 0.0.0.0
+server.publicBaseUrl: {{ kibana_url.rstrip('/') | to_json }}
+{% if kibana_base_path.rstrip('/') %}
+server.basePath: {{ kibana_base_path.rstrip('/') | to_json }}
+server.rewriteBasePath: true
+{% endif %}
+# If at all, compression should be handled by Traefik.
+server.compression.enabled: false
+
+# Encryption keys for storing authenticated data
+xpack.security.encryptionKey: {{ kibana_xpack_security_encryption_key | to_json }}
+xpack.reporting.encryptionKey: {{ kibana_xpack_reporting_encryption_key | to_json }}
+xpack.encryptedSavedObjects.encryptionKey: {{ kibana_xpack_encrypted_saved_objects_encryption_key | to_json }}

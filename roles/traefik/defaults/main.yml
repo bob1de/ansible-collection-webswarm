@@ -1,0 +1,78 @@
+---
+
+# Traefik Docker image.
+traefik_image: "traefik:v2.5"
+
+# Docker network named "traefik-edge", connecting individual web services to Traefik.
+# This doesn't need to be changed unless it overlaps with existing infrastructure.
+traefik_edge_subnet: 10.202.0.0/16
+
+# Docker network named "traefik-docker", connecting Traefik to the docker-socket-proxy
+# service.
+# It has to be large enough for 2 containers per host in the traefik group.
+# This doesn't need to be changed unless it overlaps with existing infrastructure.
+traefik_dockersocketproxy_subnet: 10.210.0.0/24
+
+# Directory for storing dynamic configuration and TLS certificates which are then
+# bind-mounted into containers read-only.
+traefik_dir: "{{ data_dir }}/traefik"
+
+# Passed to Traefik as --log.level.
+traefik_log_level: warning
+
+# Traefik entrypoint definitions.
+# Any of these pre-defined entrypoints may be changed or removed, as long as all
+# *_traefik_entrypoints variables of this and other service roles in use point to
+# valid entrypoints and the traefik_extra_cli_args list (see below) doesn't reference
+# undefined entrypoints.
+# By also adapting the *_traefik_router_rule variables, you can totally control how
+# Swarm services are reachable from the outer world.
+# For each of the entrypoints defined, a TCP port will be published in Docker.
+# The following attributes can be set per entrypoint:
+# - port: TCP port to publish (REQUIRED)
+traefik_entrypoints:
+  web:
+    port: 80
+  websecure:
+    port: 443
+  registry:
+    port: 5443
+  traefik-api:
+    port: 8080
+  kibana:
+    port: 8081
+
+# Additional CLI arguments to pass to the traefik binary.
+# Arguments are passed in following order:
+# - traefik_internal_cli_args (defined in vars/main.yml)
+# - entrypoint definitions generated from the traefik_entrypoints mapping
+# - extra arguments from traefik_extra_cli_args
+# By default, some sensible additional configuration for the pre-defined set of
+# traefik_entrypoints is applied this way:
+traefik_extra_cli_args:
+  # Disable plain HTTP access on websecure entrypoint, enforcing TLS for all services
+  - --entrypoints.websecure.http.tls
+  # Permanently redirect all traffic from web to websecure entrypoint
+  - --entrypoints.web.http.redirections.entrypoint.to=websecure
+  - --entrypoints.web.http.redirections.entrypoint.scheme=https
+
+# Comma-separated list of entrypoints for Traefik API/dashboard;
+# must be defined in traefik_entrypoints
+traefik_api_entrypoints: traefik-api
+
+# Rule for the Traefik API HTTP router
+traefik_api_router_rule: "HostRegexp(`{domain:.*}`)"
+
+# Credentials for API/dashboard
+traefik_api_users: "{{ admin_users }}"
+
+# Restrict API/dashboard access to these IPs/subnets (comma-separated).
+traefik_api_ip_whitelist: "0.0.0.0/0"
+
+# These values are set for the "default" tls option set (tls.options.default).
+# Additional tls option sets can be created by placing an appropriate config file
+# in the traefik-dynconfig directory.
+# Corresponds to tls.options.default.minVersion.
+traefik_tls_min_version: VersionTLS12
+# Corresponds to tls.options.default.sniStrict.
+traefik_tls_sni_strict: false

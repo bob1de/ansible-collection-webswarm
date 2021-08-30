@@ -1,0 +1,44 @@
+---
+
+- name: Prepare Swarm hosts
+  hosts: all
+
+  tasks:
+
+    - name: Add IP addresses of all hosts to /etc/hosts
+      loop: "{{ groups.all }}"
+      when: "hostvars[item].ansible_host is defined"
+      ansible.builtin.lineinfile:
+        dest: /etc/hosts
+        regexp: >-
+          \s{{ item | replace('.', '\\.') }}\s*\#\s*bob1de\.webswarm\s+auto-added\s*$
+        line: >-
+          {{ hostvars[item].ansible_host }}
+          {{ hostvars[item].ansible_fqdn }}
+          {{ item }}  # bob1de.webswarm auto-added
+
+    - name: Install required Debian packages
+      ansible.builtin.apt:
+        name:
+          - docker.io
+          - docker-compose
+          - iproute2
+          - mariadb-client
+          - python3-docker
+          - python3-jsondiff
+          - python3-pymysql
+          - python3-six
+          - python3-yaml
+        state: present
+        install_recommends: false
+        update_cache: true
+
+
+- name: Generate random secrets for services and store them in a variables file
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - name: bob1de.webswarm.generate_secrets
+      # Always replace an existing set of secrets, just in case the collection has
+      # been updated in between
+      replace_secrets_file: true

@@ -1,0 +1,84 @@
+#!/usr/bin/env python
+
+# Copyright: (c) 2021, Robert Schindler <dev@bob1.de>
+# GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
+
+from __future__ import absolute_import, division, print_function
+
+__metaclass__ = type
+
+
+DOCUMENTATION = r"""
+---
+module: data_hash
+
+short_description: Deterministic, salted hashing of JSON-serializable data
+
+version_added: "1.0.0"
+
+description:
+    This module generates hashes of arbitrary JSON-serializable data, deterministically
+    sorting dictionaries (maps).
+
+options:
+    data:
+        description: Data to compute a hash of.
+        required: true
+        type: any
+    previous_hash:
+        description:
+            If given, this has to be a hash previously returned by this module.
+            The ``data_changed`` result field then indicates whether data has changed
+            compared to the time this hash was generated.
+        required: false
+        type: str
+    force_new_salt:
+        description:
+          If ``previous_hash`` is provided and data hasn't changed, the same hash as
+          passed in is returned. If, however, this parameter is set to ``true``, a new
+          salt will always be generated, resulting in a different hash being returned.
+        required: false
+        default: false
+        type: bool
+
+author:
+    - Robert Schindler (@bob1de)
+"""
+
+EXAMPLES = r"""
+# Hash some data and verify it hasn't changed
+- name: Hash first data
+  register: hash_result_1
+  bob1de.webswarm.data_hash:
+    data:
+      hello: world
+      some: value
+- name: Hash second data
+  register: hash_result_2
+  bob1de.webswarm.data_hash:
+    data:
+      # Notice changed order
+      some: value
+      hello: world
+    previous_hash: "{{ hash_result_1.hash }}"
+- name: Show result
+  ansible.builtin.debug:
+    msg: "Data changed: {{ hash_result_2.data_changed }}"
+"""
+
+RETURN = r"""
+hash:
+    description:
+        Salted hash (96 hexadecimal characters) computed over given data.
+    type: str
+    returned: always
+    sample: '36d6f627497115b952ff47abef41b8bde33bef75d3cda11f6226657ba47f0f98edc9d7dfbc8579a29e3ddcd48cc76bd8'
+data_changed:
+    description:
+        Indicates whether data has changed compared to the time ``previous_hash``
+        was generated.
+        If no ``previous_hash`` is given, this is always ``true``.
+    type: bool
+    returned: always
+    sample: true
+"""

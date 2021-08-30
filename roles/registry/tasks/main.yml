@@ -1,0 +1,232 @@
+---
+
+- name: Fail when no Swarm members are in registry group
+  when: "not groups.registry | default([]) | intersect(swarm_members)"
+  run_once: true
+  ansible.builtin.fail:
+
+- name: Fail when host is in registry group but is no Swarm member
+  when: "not is_swarm_member and 'registry' in group_names"
+  ansible.builtin.fail:
+
+- name: Fail when Swarm member also is in registry_login group
+  when: "is_swarm_member and 'registry_login' in group_names"
+  ansible.builtin.fail:
+    msg: Swarm members are logged in to the private registry automatically.
+
+
+- when: registry_self_signed
+  block:
+
+    - name: Generate self-signed TLS certificate for registry if requested
+      include_role:
+        name: bob1de.webswarm.self_signed
+        apply:
+          run_once: true
+          delegate_to: localhost
+      vars: {ss_config: "{{ registry_self_signed_config }}"}
+
+    - name: Copy self-signed registry TLS certificate/key to Traefik's certs directory
+      when: "'traefik' in group_names"
+      register: registry_self_signed_copy_result
+      loop:
+        - src: "{{ registry_self_signed_config.cert_path }}"
+          dest: "{{ traefik_dir }}/certs/registry-self-signed.crt"
+        - src: "{{ registry_self_signed_config.key_path }}"
+          dest: "{{ traefik_dir }}/certs/registry-self-signed.key"
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        backup: true
+
+    - name: Generate dynamic Traefik configuration for self-signed registry TLS certificate
+      when: "'traefik' in group_names"
+      ansible.builtin.copy:
+        dest: "{{ traefik_dir }}/dynconfig/registry-self-signed.yml"
+        content: |
+          # Ansible-generated configuration for self-signed Docker registry TLS certificate.
+          # DO NOT EDIT MANUALLY!
+
+          tls:
+            certificates:
+              - certFile: "/certs/registry-self-signed.crt"
+                keyFile: "/certs/registry-self-signed.key"
+
+    - name: Touch Traefik configuration to trigger certificate reloading
+      when: >-
+        'traefik' in group_names
+        and registry_self_signed_copy_result.changed
+      ansible.builtin.file:
+        path: "{{ traefik_dir }}/dynconfig/registry-self-signed.yml"
+        state: touch
+
+    - name: "Ensure /etc/docker/certs.d/{{ registry_spec }} directory exists"
+      when: "is_swarm_member or 'registry_login' in group_names"
+      # Ensure privileged access on otherwise unrelated registry_login hosts
+      # (e.g. localhost), without having to run all local actions as root
+      become: true
+      ansible.builtin.file:
+        path: "/etc/docker/certs.d/{{ registry_spec }}"
+        state: directory
+
+    - name: Copy self-signed registry TLS certificate as CA to Docker certs.d
+      when: "is_swarm_member or 'registry_login' in group_names"
+      become: true
+      ansible.builtin.copy:
+        src: "{{ registry_self_signed_config.cert_path }}"
+        dest: "/etc/docker/certs.d/{{ registry_spec }}/ca.crt"
+        backup: true
+
+
+- when: is_swarm_leader
+  block:
+
+    - name: Retrieve info of current registry_registry Swarm service
+      register: registry_service_info_result
+      community.docker.docker_swarm_service_info:
+        name: registry_registry
+
+    - name: Extract facts about currently deployed registry users configuration
+      when: >-
+        registry_service_info_result.exists
+        and registry_service_info_result.service.Spec.Labels['ansible.users-hash'] is defined
+      ansible.builtin.set_fact:
+        registry_users_hash: "{{ registry_service_info_result.service.Spec.Labels['ansible.users-hash'] }}"
+        registry_users_config: "{{ registry_service_info_result.service.Spec.Labels['traefik.http.middlewares.registry-auth.basicauth.users'] }}"
+
+    - name: Hash registry users configuration for change detection
+      register: registry_users_hash_result
+      bob1de.webswarm.data_hash:
+        data: "{{ _registry_users_full }}"
+        previous_hash: "{{ registry_users_hash | default(omit) }}"
+
+    - when: >-
+        registry_users_config is not defined
+        or registry_users_hash_result.data_changed
+      block:
+
+        - name: Generate registry users configuration if changed
+          delegate_to: localhost
+          register: registry_users_htpasswd_result
+          changed_when: false
+          # Hide passwords
+          no_log: true
+          loop: "{{ _registry_users_full }}"
+          ansible.builtin.command:
+            argv: ["htpasswd", "-nbB", "{{ item.username }}", "{{ item.password }}"]
+
+        - name: Store facts about changed registry users configuration
+          ansible.builtin.set_fact:
+            registry_users_hash: "{{ registry_users_hash_result.hash }}"
+            registry_users_config: "{{ registry_users_htpasswd_result.results | map(attribute='stdout') | join(',') }}"
+
+
+- name: Create registry directory
+  when: "'registry' in group_names"
+  ansible.builtin.file:
+    path: "{{ registry_dir }}"
+    state: directory
+
+- name: Create registry data directory if local volume driver is used
+  when: >-
+    'registry' in group_names
+    and registry_data_volume_driver == 'local'
+  ansible.builtin.file:
+    path: "{{ registry_data_dir }}"
+    state: directory
+    mode: 0770
+
+
+- name: Add registry=true label to Swarm nodes in the registry group
+  when: is_swarm_leader
+  with_inventory_hostnames: registry
+  community.docker.docker_node:
+    hostname: "{{ hostvars[item].ansible_facts.hostname }}"
+    labels: {registry: "true"}
+
+- name: Remove registry label from Swarm nodes not in the registry group
+  when: is_swarm_leader
+  with_inventory_hostnames: "swarm_manager:swarm_worker:!registry"
+  community.docker.docker_node:
+    hostname: "{{ hostvars[item].ansible_facts.hostname }}"
+    labels_to_remove: [registry]
+
+
+- name: Deploy registry to Swarm
+  when: is_swarm_leader
+  register: registry_docker_stack_result
+  # For some reason, the stack deployment is not idempotent on second run, hence it
+  # has to be run twice, after which it doesn't report changed anymore.
+  loop: [null, null]
+  community.docker.docker_stack:
+    name: registry
+    with_registry_auth: true
+    compose:
+      - version: "3.7"
+        networks:
+          traefik-edge:
+            external: true
+        volumes:
+          data:
+            driver: "{{ registry_data_volume_driver }}"
+            driver_opts: "{{ registry_data_volume_driver_options }}"
+        services:
+          registry:
+            image: "{{ registry_image }}"
+            environment:
+              REGISTRY_HTTP_ADDR: "0.0.0.0:5000"
+              # Escape $ to prevent variable expansion by docker-compose.
+              REGISTRY_HTTP_SECRET: "{{ registry_http_secret | replace('$', '$$') }}"
+            deploy:
+              labels:
+                - "traefik.enable=true"
+                - "traefik.http.routers.registry.entrypoints={{ registry_traefik_entrypoints }}"
+                - "traefik.http.routers.registry.rule={{ registry_traefik_router_rule }}"
+                - "traefik.http.routers.registry.tls=true"
+                - "traefik.http.routers.registry.middlewares=registry-ip-whitelist,registry-auth"
+                - "traefik.http.middlewares.registry-ip-whitelist.ipwhitelist.sourcerange={{ registry_ip_whitelist }}"
+                # Authentication using hashed credentials from registry_users.
+                # Docker-compose expands environment variables, hence $ must be escaped.
+                - "traefik.http.middlewares.registry-auth.basicauth.users={{ registry_users_config | replace('$', '$$') }}"
+                - "traefik.http.middlewares.registry-auth.basicauth.realm=Docker registry"
+                - "traefik.http.services.registry.loadbalancer.server.port=5000"
+                # Allows detecting changes of traefik_admin_users variable
+                - "ansible.users-hash={{ registry_users_hash }}"
+              mode: global
+              placement:
+                constraints: ["node.labels.registry==true"]
+            networks: [traefik-edge]
+            volumes:
+              - type: volume
+                source: data
+                target: /var/lib/registry
+    resolve_image: changed
+
+
+- name: Wait 10 seconds to have Traefik notice changed services
+  when: >-
+    is_swarm_leader
+    and registry_docker_stack_result.changed
+  ansible.builtin.wait_for:
+    timeout: 10
+
+- name: Wait for registry to become reachable via Traefik
+  when: is_swarm_leader
+  register: registry_status_result
+  until: registry_status_result is success
+  retries: 60
+  delay: 5
+  ansible.builtin.uri:
+    url: "https://{{ registry_spec }}/v2/"
+    url_username: "{{ registry_username_internal }}"
+    url_password: "{{ registry_password_internal }}"
+    force_basic_auth: true
+    ca_path: "{% if registry_self_signed %}/etc/docker/certs.d/{{ registry_spec }}/ca.crt{% else %}{{ omit }}{% endif %}"
+
+
+- name: Log in to deployed Docker registry
+  when: "is_swarm_member or 'registry_login' in group_names"
+  community.docker.docker_login:
+    registry_url: "https://{{ registry_spec }}"
+    username: "{{ registry_username_internal }}"
+    password: "{{ registry_password_internal }}"

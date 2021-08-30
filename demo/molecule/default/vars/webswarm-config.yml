@@ -1,0 +1,7 @@
+---
+
+# Generate self-signed TLS certificate for Docker registry
+registry_self_signed: true
+
+# Limit Elasticsearch memory usage on VM
+elasticsearch_java_options: "-Xms512m -Xmx512m"

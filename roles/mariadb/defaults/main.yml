@@ -1,0 +1,32 @@
+---
+
+# Docker image to use for MariaDB
+mariadb_image: "mariadb:10"
+
+# This directory will be the root for any MariaDB-related files.
+# Unless configured differently (see below), database contents will be stored in a
+# subdirectory of this.
+mariadb_dir: "{{ data_dir }}/mariadb"
+
+# This directory will store MariaDB database contents, but only if the
+# "local" volume driver is configured below. If a different driver is used, this
+# setting has no effect.
+mariadb_data_dir: "{{ mariadb_dir }}/data"
+# Docker volume configuration for MariaDB's data volume
+mariadb_data_volume_driver: local
+mariadb_data_volume_driver_options:
+  type: "none"
+  o: bind
+  device: "{{ mariadb_data_dir }}"
+
+# Docker network named "mariadb", connecting applications to MariaDB.
+# It has to be large enough to provide addresses for the MariaDB container plus
+# anything extra you deploy and attach to the mariadb network yourself.
+# This doesn't need to be changed unless it overlaps with existing infrastructure.
+mariadb_subnet: 10.210.2.0/24
+
+# Password for the root@% MariaDB user which has full privileges.
+# In order to change the password after the MariaDB instance has been initialized,
+# you have to alter the root@% database user manually.
+# REQUIRED
+#mariadb_root_password: "..."

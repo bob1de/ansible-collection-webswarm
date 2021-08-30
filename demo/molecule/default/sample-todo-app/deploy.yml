@@ -1,0 +1,182 @@
+# This playbook will deploy a sample todo PHP web app to the Swarm.
+# It requires a complete Swarm setup incl. Traefik, private Docker registry and
+# MariaDB to be set up by the bob1de.webswarm.* roles beforehand.
+
+---
+
+- name: Deploy sample todo web app
+  hosts: all
+  # Treat the Swarm as a whole and thus fail when any host fails
+  any_errors_fatal: true
+  # Run cleanup handlers even if the play failed.
+  force_handlers: true
+
+  vars:
+    # App will be reachable on first host in traefik group; specify without port
+    app_http_host: "{{ hostvars[groups.traefik[0]].ansible_facts.fqdn }}"
+    # Make the app available via HTTPS on the websecure entrypoint
+    app_traefik_entrypoint: websecure
+    app_http_scheme: https
+    app_http_path: /
+    # Use registry_spec helper role variable to reference the private Docker registry
+    app_image: "{{ registry_spec }}/todo-app:v1"
+    # User/db the app will use for connecting to MariaDB
+    db_user: todo
+    db_password: "changeme"
+    db_name: todo
+    # Whether to remove an existing database first
+    db_recreate: false
+
+  vars_files:
+    # Load role settings and service secrets
+    - ../vars/webswarm-config.yml
+    - ../vars/webswarm-secrets.yml
+
+  tasks:
+
+    - name: Load helper variables by including roles with never tag and public=true
+      loop:
+        - bob1de.webswarm.swarm
+        - bob1de.webswarm.traefik
+        - bob1de.webswarm.registry
+        - bob1de.webswarm.mariadb
+      # A bug in Ansible makes the loop variable stay visible throughout the play
+      # when looping over include_role, hence it's changed from its default ("item")
+      # to not conflict with subsequent loops
+      loop_control: {loop_var: role_name}
+      include_role:
+        name: "{{ role_name }}"
+        # Don't execute any tasks of the included roles, just load variables into play
+        apply: {tags: [never]}
+        public: true
+
+    # Now deploy the actual app.
+
+    - name: Generate config.php for todo app
+      run_once: true
+      delegate_to: localhost
+      ansible.builtin.template:
+        src: config.php.j2
+        dest: ./build/config.php
+        mode: 0640
+        backup: true
+
+    - name: "Build {{ app_image }} Docker image and push to private registry"
+      # The Docker image is built on localhost and pushed to the private registry.
+      # This requires the registry host's FQDN to be resolvable and localhost to be
+      # logged in to the registry. If the role was deployed with localhost in the
+      # registry_login group as shown in ../converge.yml, the login will have been
+      # performed automatically.
+      run_once: true
+      delegate_to: localhost
+      community.docker.docker_image:
+        name: "{{ app_image }}"
+        push: true
+        source: build
+        # Rebuild if image exists to detect changes
+        force_source: true
+        build:
+          path: ./build
+
+    - when: is_swarm_leader
+      block:
+
+        - name: Create temporary proxy to MariaDB for executing setup tasks
+          include_role:
+            name: bob1de.webswarm.proxy_container
+          vars:
+            listen_port: 13306
+            proxy_network: mariadb
+            proxy_host: db.mariadb
+            proxy_port: 3306
+
+        - name: "Create {{ db_user }} MariaDB user"
+          community.mysql.mysql_user:
+            login_host: 127.0.0.1
+            login_port: 13306
+            login_user: root
+            login_password: "{{ mariadb_root_password }}"
+            name: "{{ db_user }}"
+            host: "%"
+            password: "{{ db_password }}"
+            # Ansible doesn't allow templating in dict keys, hence the mapping is
+            # constructed inline
+            priv: "{{ {db_name + '.*': 'ALL'} }}"
+
+        - name: Create temporary file for storing SQL dump to import
+          notify: [remove-tmp-sql]
+          register: tmp_sql_result
+          ansible.builtin.tempfile:
+            suffix: .sql
+
+        - name: Copy SQL dump to import to remote host
+          ansible.builtin.copy:
+            src: ./init.sql
+            dest: "{{ tmp_sql_result.path }}"
+
+        - name: "Remove {{ db_name }} MariaDB database if requested"
+          when: db_recreate
+          community.mysql.mysql_db:
+            login_host: 127.0.0.1
+            login_port: 13306
+            login_user: root
+            login_password: "{{ mariadb_root_password }}"
+            name: "{{ db_name }}"
+            state: absent
+
+        - name: "Create {{ db_name }} MariaDB database and load initial data"
+          community.mysql.mysql_db:
+            login_host: 127.0.0.1
+            login_port: 13306
+            login_user: root
+            login_password: "{{ mariadb_root_password }}"
+            name: "{{ db_name }}"
+            # Just use state=present and omit target if no data should be loaded.
+            state: import
+            target: "{{ tmp_sql_result.path }}"
+
+        - name: Deploy todo app to Swarm
+          community.docker.docker_stack:
+            name: todo
+            # Distribute registry authentication information to Swarm agents
+            with_registry_auth: true
+            compose:
+              - version: "3.7"
+                networks:
+                  mariadb:
+                    external: true
+                  # Connects the app to Traefik for ingress routing
+                  traefik-edge:
+                    external: true
+                services:
+                  app:
+                    image: "{{ app_image }}"
+                    # Labels to apply to the individual containers
+                    labels:
+                      # Apply Filebeat hints for semantic log parsing
+                      - "co.elastic.logs/module=apache"
+                      - "co.elastic.logs/fileset.stdout=access"
+                      - "co.elastic.logs/fileset.stderr=error"
+                    deploy:
+                      # Create 2 load-balanced replicas of the app
+                      replicas: 2
+                      # Labels to add to the Swarm service as a whole
+                      labels:
+                        - "traefik.enable=true"
+                        - "traefik.http.routers.todo.entrypoints={{ app_traefik_entrypoint }}"
+                        - "traefik.http.routers.todo.rule=Host(`{{ app_http_host }}`) && PathPrefix(`{{ app_http_path }}`)"
+                        - "traefik.http.services.todo.loadbalancer.server.port=80"
+                    networks: [traefik-edge, mariadb]
+
+        - name: Show app's URL
+          ansible.builtin.debug:
+            msg: >-
+              The todo app is now deployed at
+              {{ app_http_scheme }}://{{ app_http_host }}:{{ traefik_entrypoints[app_traefik_entrypoint].port }}{{ app_http_path }}
+
+  handlers:
+    - name: Remove temporary SQL dump file
+      listen: remove-tmp-sql
+      ansible.builtin.file:
+        path: "{{ tmp_sql_result.path }}"
+        state: absent

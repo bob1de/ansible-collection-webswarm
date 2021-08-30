@@ -1,0 +1,23 @@
+---
+
+- name: Find temporary proxy Docker containers
+  listen: remove-temporary-proxy-containers
+  register: dhi_find_proxy_result
+  community.docker.docker_host_info:
+    containers: true
+    containers_filters:
+      label: "ansible.temporary-proxy=true"
+
+- name: Remove temporary proxy Docker containers
+  listen: remove-temporary-proxy-containers
+  loop: "{{ dhi_find_proxy_result.containers | map(attribute='Id') }}"
+  register: remove_proxy_result
+  # Older (unrecommended) Docker versions (verified with 18.09) seem to reset
+  # connections when rapidly removing multiple containers, hence the retries.
+  retries: 10
+  delay: 5
+  until: remove_proxy_result is success
+  community.docker.docker_container:
+    name: "{{ item }}"
+    state: absent
+    container_default_behavior: no_defaults

@@ -1,0 +1,20 @@
+---
+
+- name: Fail when no host is in swarm_manager group
+  when: not swarm_managers
+  run_once: true
+  ansible.builtin.fail:
+
+- name: Fail when host is in both swarm_manager and swarm_worker groups
+  when: is_swarm_manager and is_swarm_worker
+  ansible.builtin.fail:
+
+- name: Show information about configured Swarm layout
+  tags: [swarm-info]
+  run_once: true
+  delegate_to: localhost
+  ansible.builtin.debug:
+    msg:
+      - "Managers: [{{ swarm_managers | join(', ') }}]"
+      - "Workers: [{{ swarm_workers | join(', ') }}]"
+      - "Chosen leader in this play: {{ swarm_leader }}"

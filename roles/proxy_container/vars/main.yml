@@ -1,0 +1,6 @@
+---
+
+listen_address: 127.0.0.1
+listen_port: "{{ proxy_port }}"
+proxy_protocol: tcp
+proxy_container_name: "tmp-proxy-{{ proxy_protocol }}-{{ listen_port }}"

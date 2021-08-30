@@ -1,0 +1,35 @@
+---
+
+namespace: bob1de
+
+name: webswarm
+
+version: 1.0.0
+
+readme: README.rst
+
+authors:
+  - Robert Schindler <dev@bob1.de>
+
+description: >-
+  Automated Docker Swarm setup with Traefik, MariaDB, private Docker registry and more.
+
+license: GPL-3.0-or-later
+
+tags: [docker, swarm, web]
+
+dependencies:
+  community.crypto: ">=1.8.0"
+  community.docker: ">=1.9.0"
+  community.mysql: ">=2.1.0"
+
+repository: https://github.com/bob1de/ansible-collection-webswarm
+
+documentation: https://github.com/bob1de/ansible-collection-webswarm
+
+homepage: https://github.com/bob1de/ansible-collection-webswarm
+
+issues: https://github.com/bob1de/ansible-collection-webswarm/issues
+
+build_ignore:
+  - demo

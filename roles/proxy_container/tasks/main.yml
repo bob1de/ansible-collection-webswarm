@@ -1,0 +1,29 @@
+---
+
+- name: "Create {{ proxy_container_name }} Docker container"
+  notify: remove-temporary-proxy-containers
+  register: docker_proxy_container_result
+  # Always notify handler, even if container existed already.
+  # This ensures containers left over from failed previous runs are pruned.
+  changed_when: >-
+    docker_proxy_container_result is change
+    or docker_proxy_container_result is success
+  community.docker.docker_container:
+    name: "{{ proxy_container_name }}"
+    image: "{{ socat_image }}"
+    command:
+      # -d -d logs connections
+      - "-d"
+      - "-d"
+      # -s continues on errors
+      - "-s"
+      - "{{ proxy_protocol }}-listen:{{ proxy_port }},fork,reuseaddr"
+      - "{{ proxy_protocol }}:{{ proxy_host }}:{{ proxy_port }}"
+    networks:
+      - name: "{{ proxy_network }}"
+    network_mode: "{{ proxy_network }}"
+    ports:
+      - "{{ listen_address }}:{{ listen_port }}:{{ proxy_port }}/{{ proxy_protocol }}"
+    labels:
+      ansible.temporary-proxy: "true"
+    container_default_behavior: no_defaults

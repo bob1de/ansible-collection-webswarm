@@ -1,0 +1,37 @@
+# {{ ansible_managed }}
+#
+# Base TLS configuration.
+
+tls:
+{% if traefik_tls_certs %}
+{% if traefik_tls_certs != ['default'] %}
+
+  certificates:
+{% for cert_name in traefik_tls_certs %}
+{% if cert_name != 'default' %}
+    - certFile: {{ ('/certs/' + cert_name + '.crt') | to_json }}
+      keyFile: {{ ('/certs/' + cert_name + '.key') | to_json }}
+{% endif %}
+{% endfor %}
+{% endif %}
+
+{% if 'default' in traefik_tls_certs %}
+  stores:
+    default:
+      defaultCertificate:
+        certFile: "/certs/default.crt"
+        keyFile: "/certs/default.key"
+{% else %}
+  # No default.crt/default.key found by Ansible in the traefik-certs directory!
+  # Traefik will serve a self-signed fallback certificate for requests for which no
+  # matching certificate exists.
+{% endif %}
+{% else %}
+
+  # No TLS certificates found by Ansible in the traefik-certs directory!
+{% endif %}
+
+  options:
+    default:
+      minVersion: {{ traefik_tls_min_version | to_json }}
+      sniStrict: {{ traefik_tls_sni_strict | to_json }}

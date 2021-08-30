@@ -1,0 +1,173 @@
+---
+
+# Docker image to use for Elasticsearch
+elasticsearch_image: "docker.elastic.co/elasticsearch/elasticsearch:7.14.0"
+
+# This directory will store the elasticsearch.yml configuration file and (unless
+# configured differently below) database contents.
+elasticsearch_dir: "{{ data_dir }}/elasticsearch"
+
+# This directory will store Elasticsearch database contents, but only if the
+# "local" volume driver is configured below. If a different driver is used, this
+# setting has no effect.
+elasticsearch_data_dir: "{{ elasticsearch_dir }}/data"
+# Docker volume configuration for Elasticsearch's data volume
+elasticsearch_data_volume_driver: local
+elasticsearch_data_volume_driver_options:
+  type: "none"
+  o: bind
+  device: "{{ elasticsearch_data_dir }}"
+
+# Docker network named "elastic", connecting applications to Elasticsearch.
+# It has to be large enough to provide addresses for the Elasticsearch containers
+# and one Filebeat container per node, plus anything extra you deploy and attach to
+# the elastic network yourself.
+# This doesn't need to be changed unless it overlaps with existing infrastructure.
+elastic_subnet: 10.210.1.0/24
+
+# Java options to pass when running Elasticsearch, mainly for memory configuration
+elasticsearch_java_options: "-Xms1024m -Xmx1024m"
+
+# Used as node.name in elasticsearch.yml; can be overridden per host using hostvars
+elasticsearch_node_name: "{{ inventory_hostname }}"
+
+# Used as cluster.name in elasticsearch.yml
+elasticsearch_cluster_name: elasticsearch
+
+# Whether to prevent swapping of heap memory.
+# See https://www.elastic.co/guide/en/elasticsearch/reference/current/setup-configuration-memory.html#bootstrap-memory_lock
+# This feature can greatly improve performance but is only available with recent
+# Docker versions (verified in 20.10), which is the minimum recommended version anyway.
+# The feature tracking issue is https://github.com/moby/moby/issues/40639
+elasticsearch_memory_lock: true
+
+# Elasticsearch requires the vm.max_map_value kernel variable to have a minimum value.
+# See https://www.elastic.co/guide/en/elasticsearch/reference/current/vm-max-map-count.html
+elasticsearch_min_vm_max_map_count: 262144
+
+# Parameters for the self-signed certificate used for inter-node communication.
+# All nodes use the same certificate, hence no hostname verification is done and
+# subject can be arbitrary.
+# Available options and default values are documented in tasks/self-signed.yml.
+elasticsearch_self_signed_config:
+  key_path: elasticsearch-self-signed.key
+  csr_path: elasticsearch-self-signed.csr
+  cert_path: elasticsearch-self-signed.crt
+  subject: {commonName: elasticsearch}
+
+# Passwords for the built-in Elasticsearch user accounts.
+# Accounts for which no password is configured will be unusable.
+#elasticsearch_builtin_passwords:
+#  elastic: "..." (REQUIRED)
+#  kibana_system: "..." (REQUIRED)
+#  logstash_system: "..."
+#  beats_system: "..."
+#  apm_system: "..."
+#  remote_monitoring_user: "..."
+
+# List of user accounts to be created in Elasticsearch's native realm.
+# In addition to username and password, the following attributes can be set:
+# - full_name: user's full name
+# - email: user's e-mail address
+# - elasticsearch_metadata: mapping of custom metadata to assign to the user
+# - elasticsearch_roles: list of roles to assign to the user
+elasticsearch_users: "{{ admin_users }}"
+
+# These roles will be assigned to accounts in the elasticsearch_users list which
+# have no elasticsearch_roles attribute set.
+elasticsearch_default_roles: [kibana_admin]
+
+# If set to true, non-built-in user accounts found in Elasticsearch but not defined
+# in elasticsearch_users will be deleted.
+# Otherwise, you will be left with a stale account in Elasticsearch after the
+# corresponding entry has been removed from the elasticsearch_users list.
+elasticsearch_delete_stale_users: true
+
+
+########################################
+# KIBANA
+########################################
+
+# Docker image to use for Kibana
+kibana_image: "docker.elastic.co/kibana/kibana:7.14.0"
+
+# This directory will store the kibana.yml configuration file and (unless
+# configured differently below) persistent data.
+kibana_dir: "{{ data_dir }}/kibana"
+
+# This directory will store Kibana persistent data, but only if the "local" volume
+# driver is configured below. If a different driver is used, this setting has
+# no effect.
+kibana_data_dir: "{{ kibana_dir }}/data"
+# Docker volume configuration for Kibana's data volume
+kibana_data_volume_driver: local
+kibana_data_volume_driver_options:
+  type: "none"
+  o: bind
+  device: "{{ kibana_data_dir }}"
+
+# Human-readable instance name; used as server.name in kibana.yml.
+kibana_server_name: kibana
+
+# A UUID identifying the Kibana instance; used as server.uuid in kibana.yml.
+# REQUIRED
+#kibana_server_uuid: "..."
+
+# Generate random key strings which are used to store authenticated data.
+# Keys must be 32 characters long or more.
+# REQUIRED
+#kibana_xpack_security_encryption_key: "..."
+#kibana_xpack_reporting_encryption_key: "..."
+#kibana_xpack_encrypted_saved_objects_encryption_key: "..."
+
+# Comma-separated list of Traefik entrypoints for public Kibana access;
+# must be defined in traefik_entrypoints
+kibana_traefik_entrypoints: kibana
+
+# Rule for the Kibana Traefik HTTP router
+kibana_traefik_router_rule: "HostRegexp(`{domain:.*}`)"
+
+# Restrict Kibana access to these IPs/subnets (comma-separated)
+# Make sure to include the Swarm leader host to permit health checking.
+kibana_ip_whitelist: "0.0.0.0/0"
+
+# These settings are used for reaching Kibana via Traefik.
+# They must correspond to the kibana_traefik_router_rule.
+kibana_fqdn: "{{ hostvars[groups.traefik[0]].ansible_facts.fqdn }}"
+# Port for Kibana (TLS).
+# This defaults to the port of the first entrypoint listed in
+# kibana_traefik_entrypoints.
+kibana_port: "{{ traefik_entrypoints[kibana_traefik_entrypoints.split(',')[0].strip()].port }}"
+# Base path under which Kibana web service is mounted.
+kibana_base_path: "/"
+kibana_url: "https://{{ kibana_fqdn }}:{{ kibana_port }}{{ kibana_base_path.rstrip('/') }}"
+
+
+########################################
+# FILEBEAT
+########################################
+
+# Docker image to use for Filebeat
+filebeat_image: "docker.elastic.co/beats/filebeat:7.14.0"
+
+# This directory will store the filebeat.yml configuration file and (unless
+# configured differently below) persistent state data.
+filebeat_dir: "{{ data_dir }}/filebeat"
+
+# This directory will store Filebeat persistent data, but only if the "local" volume
+# driver is configured below. If a different driver is used, this setting has
+# no effect.
+filebeat_data_dir: "{{ filebeat_dir }}/data"
+# Docker volume configuration for Kibana's data volume
+filebeat_data_volume_driver: local
+filebeat_data_volume_driver_options:
+  type: "none"
+  o: bind
+  device: "{{ filebeat_data_dir }}"
+
+# Elasticsearch user account to be created for Filebeat.
+# This account will have the filebeat_writer role, a custom role which grants
+# privileges needed to write log messages to Elasticsearch.
+filebeat_username: filebeat
+# REQUIRED
+#filebeat_password: "..."

@@ -1,0 +1,236 @@
+# NOTE:
+# These tasks don't check for is_swarm_member, so only include them in a block with
+# "when: is_swarm_member" applied.
+
+---
+
+- name: Query Docker host information to detect Swarm membership status
+  register: docker_host_info_result
+  community.docker.docker_host_info:
+
+- name: Store Swarm activity state as fact
+  ansible.builtin.set_fact:
+    swarm_active: "{{ docker_host_info_result.host_info.Swarm.LocalNodeState != 'inactive' }}"
+
+
+- name: Create docker_gwbridge network
+  when: >-
+    not swarm_active
+    and docker_gwbridge_subnet is defined
+    and docker_gwbridge_subnet | ipaddr('net')
+  community.docker.docker_network:
+    name: docker_gwbridge
+    force: true
+    driver_options:
+      com.docker.network.bridge.enable_icc: "false"
+      com.docker.network.bridge.enable_ip_masquerade: "true"
+      com.docker.network.bridge.name: docker_gwbridge
+    ipam_config:
+      - subnet: "{{ docker_gwbridge_subnet }}"
+        gateway: "{{ docker_gwbridge_subnet | ipaddr('net') | ipaddr('1') | ipaddr('ip') }}"
+
+
+- name: Initialize Swarm on leader node
+  when: is_swarm_leader and not swarm_active
+  community.docker.docker_swarm:
+    state: present
+    advertise_addr: "{{ swarm_address }}"
+    listen_addr: "{{ swarm_address }}:{{ swarm_port }}"
+
+
+# community.docker.docker_network doesn't allow removing/creating the ingress network,
+# hence it has to be done manually via CLI.
+- when: >-
+    is_swarm_leader
+    and not swarm_active
+    and docker_ingress_subnet is defined
+    and docker_ingress_subnet | ipaddr('net')
+  block:
+
+    - name: Remove existing Docker ingress network
+      ansible.builtin.command:
+        argv:
+          - docker
+          - network
+          - rm
+          - ingress
+        stdin: "y"
+
+    - name: Create Docker ingress network
+      # It takes some time before Docker allows recreating a removed network
+      register: docker_ingress_create_result
+      retries: 10
+      delay: 3
+      until: docker_ingress_create_result is success
+      ansible.builtin.command:
+        argv:
+          - docker
+          - network
+          - create
+          - --ingress
+          - --driver
+          - overlay
+          - --subnet
+          - "{{ docker_ingress_subnet }}"
+          - --gateway
+          - "{{ docker_ingress_subnet | ipaddr('net') | ipaddr('1') | ipaddr('ip') }}"
+          - ingress
+
+
+- name: Query Swarm facts
+  when: is_swarm_leader
+  register: swarm_info_result
+  community.docker.docker_swarm_info:
+
+- name: Store Swarm facts as fact for disttribution
+  when: is_swarm_leader
+  set_fact:
+    swarm_facts: "{{ swarm_info_result.swarm_facts }}"
+
+- name: Distribute Swarm facts
+  when: not is_swarm_leader
+  set_fact:
+    swarm_facts: "{{ hostvars[swarm_leader].swarm_facts }}"
+
+
+- name: Store IP address to use for joining nodes to the swarm
+  when: is_swarm_leader
+  set_fact:
+    swarm_join_address: "{{ swarm_address }}:{{ swarm_port }}"
+
+- name: Distribute IP address to use for joining nodes to the swarm
+  when: not is_swarm_leader
+  set_fact:
+    swarm_join_address: "{{ hostvars[swarm_leader].swarm_join_address }}"
+
+
+- name: Join pending manager nodes to Swarm
+  when: not is_swarm_leader and is_swarm_manager and not swarm_active
+  community.docker.docker_swarm:
+    state: join
+    advertise_addr: "{{ swarm_address }}:{{ swarm_port }}"
+    listen_addr: "{{ swarm_address }}:{{ swarm_port }}"
+    join_token: "{{ swarm_facts.JoinTokens.Manager }}"
+    remote_addrs: ["{{ swarm_join_address }}"]
+
+- name: Join pending worker nodes to Swarm
+  when: is_swarm_worker and not swarm_active
+  community.docker.docker_swarm:
+    state: join
+    advertise_addr: "{{ swarm_address }}:{{ swarm_port }}"
+    listen_addr: "{{ swarm_address }}:{{ swarm_port }}"
+    join_token: "{{ swarm_facts.JoinTokens.Worker }}"
+    remote_addrs: ["{{ swarm_join_address }}"]
+
+
+- name: Query Docker host information
+  register: docker_host_info_result
+  community.docker.docker_host_info:
+
+- name: Store Swarm information as fact
+  ansible.builtin.set_fact:
+    swarm_info: "{{ docker_host_info_result.host_info.Swarm }}"
+
+- name: Store list of node IDs of managed Swarm members
+  run_once: true
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    swarm_node_ids: "{{ swarm_members | map('extract', hostvars, ['swarm_info', 'NodeID']) }}"
+
+- when: is_swarm_leader and swarm_remove_orphaned_nodes
+  block:
+
+    - name: Query list of known nodes from Swarm leader
+      register: docker_swarm_info_result
+      community.docker.docker_swarm_info:
+        nodes: true
+
+    - name: Remove nodes in "down" state with unknown node ID
+      when: >-
+        item.Status == 'down'
+        and item.ID not in swarm_node_ids
+      register: docker_swarm_remove_result
+      loop: "{{ docker_swarm_info_result.nodes }}"
+      community.docker.docker_swarm:
+        node_id: "{{ item.ID }}"
+        state: remove
+
+    - name: Wait 10 seconds for all Swarm nodes to retrieve changed state
+      when: docker_swarm_remove_result.changed
+      ansible.builtin.wait_for:
+        timeout: 10
+
+
+# Sanity checks
+
+- name: Query Docker host information again after orphaned Swarm nodes have been removed
+  register: docker_host_info_result
+  community.docker.docker_host_info:
+
+- name: Store Swarm information as fact
+  ansible.builtin.set_fact:
+    swarm_info: "{{ docker_host_info_result.host_info.Swarm }}"
+
+- name: Fail when LocalNodeState of Swarm node is not as desired
+  when: >-
+    swarm_ensure_local_node_state is defined
+    and swarm_ensure_local_node_state
+    and swarm_info.LocalNodeState != swarm_ensure_local_node_state
+  ansible.builtin.fail:
+    msg: |-
+      Actual state is {{ swarm_info.LocalNodeState | to_json }}.
+      Desired state is {{ swarm_ensure_local_node_state | to_json }}.
+
+- name: Store Swarm node addresses of hosts in swarm_manager group
+  when: is_swarm_manager
+  ansible.builtin.set_fact:
+    swarm_node_addr_fact: "{{ swarm_address }}:{{ swarm_port }}"
+
+- name: Collect Swarm node IDs and addresses of hosts in swarm_manager group
+  run_once: true
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    swarm_manager_node_details: >-
+      {{
+        swarm_managers
+        | zip(
+          swarm_managers | map('extract', hostvars, 'swarm_node_addr_fact'),
+          swarm_managers | map('extract', hostvars, ['swarm_info', 'NodeID'])
+        )
+      }}
+
+- name: Fail when known manager node IDs don't match the IDs of hosts in swarm_manager group
+  when: >-
+    swarm_info.RemoteManagers
+    | map(attribute='NodeID')
+    | symmetric_difference(swarm_manager_node_details | map('last'))
+  ansible.builtin.fail:
+    msg: |-
+      Nodes missing from remote managers list: {{
+        swarm_manager_node_details
+        | map('last')
+        | difference(swarm_info.RemoteManagers | map(attribute='NodeID'))
+        | map('extract', swarm_manager_node_details | items2dict(key_name=2, value_name=0))
+      }}
+      Unexpected node IDs found in remote managers list: {{
+        swarm_info.RemoteManagers | map(attribute='NodeID')
+        | difference(swarm_manager_node_details | map('last'))
+      }}
+      Run "docker system info" and investigate the problem.
+
+- name: Fail when the local mapping of a manager's node ID to address is incorrect
+  when: >-
+    (
+      swarm_info.RemoteManagers
+      | items2dict(key_name='NodeID', value_name='Addr')
+    )[item[2]] != item[1]
+  loop: "{{ swarm_manager_node_details }}"
+  ansible.builtin.fail:
+    msg: |-
+      Node thinks {{ item[2] }} ({{ item[0] }}) is reachable at {{
+        (
+          swarm_info.RemoteManagers
+          | items2dict(key_name='NodeID', value_name='Addr')
+        )[item[2]]
+      }} instead of {{ item[1] }}.
+      Run "docker system info" and investigate the problem.

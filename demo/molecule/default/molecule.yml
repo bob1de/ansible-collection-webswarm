@@ -1,0 +1,46 @@
+---
+
+dependency:
+  name: galaxy
+  options:
+    requirements-file: requirements.yml
+    role-file: requirements.yml
+
+
+driver:
+  name: vagrant
+  provider:
+    name: libvirt
+
+
+platforms:
+
+  - name: deb11-man1
+    box: debian/bullseye64
+    cpus: 2
+    # Elasticsearch is quite demanding regarding memory
+    memory: 3072
+    groups:
+      - swarm_manager
+      - traefik
+      - registry
+      - elasticsearch
+      - elasticsearch_master
+      - kibana
+
+  - name: deb11-wrk1
+    box: debian/bullseye64
+    cpus: 2
+    memory: 1024
+    groups:
+      - swarm_worker
+      - traefik
+      - mariadb
+
+
+provisioner:
+  name: ansible
+  connection_options:
+    ansible_ssh_user: vagrant
+    ansible_become: true
+  log: true

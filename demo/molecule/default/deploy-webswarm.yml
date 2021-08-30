@@ -1,0 +1,18 @@
+---
+
+- name: Run roles of bob1de.webswarm to set up the Swarm and system services
+  hosts: all
+  # Treat the Swarm as a whole and thus fail when any host fails
+  any_errors_fatal: true
+  # Run cleanup handlers even if the play failed.
+  force_handlers: true
+  roles:
+    - name: bob1de.webswarm.swarm
+    - name: bob1de.webswarm.traefik
+    - name: bob1de.webswarm.registry
+    - name: bob1de.webswarm.elastic
+    - name: bob1de.webswarm.mariadb
+  vars_files:
+    # Load role settings and service secrets
+    - ./vars/webswarm-config.yml
+    - ./vars/webswarm-secrets.yml

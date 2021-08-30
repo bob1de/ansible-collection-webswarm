@@ -1,0 +1,31 @@
+---
+
+- hosts: all
+  tasks:
+
+    - name: Add localhost to registry_login group for pushing to private registry
+      ansible.builtin.add_host:
+        name: localhost
+        groups: [registry_login]
+        ansible_connection: local
+
+    - name: Add IP addresses of Swarm members to /etc/hosts on localhost for resolving private Docker registry
+      loop: "{{ groups.swarm_manager | default([]) + groups.swarm_worker | default([]) }}"
+      when: "hostvars[item].ansible_host is defined"
+      run_once: true
+      delegate_to: localhost
+      become: true
+      ansible.builtin.lineinfile:
+        dest: /etc/hosts
+        regexp: >-
+          \s{{ item | replace('.', '\\.') }}\s*\#\s*bob1de\.webswarm\s+auto-added\s*$
+        line: >-
+          {{ hostvars[item].ansible_host }}
+          {{ hostvars[item].ansible_fqdn }}
+          {{ item }}  # bob1de.webswarm auto-added
+
+
+- import_playbook: ./deploy-webswarm.yml
+
+
+- import_playbook: ./sample-todo-app/deploy.yml
