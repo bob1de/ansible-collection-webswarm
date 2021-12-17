@@ -93,7 +93,6 @@
                 target: /var/lib/mysql
                 volume:
                   nocopy: true
-    resolve_image: changed
 
 
 - when: is_swarm_leader

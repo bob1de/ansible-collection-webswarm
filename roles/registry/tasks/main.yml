@@ -200,7 +200,6 @@
               - type: volume
                 source: data
                 target: /var/lib/registry
-    resolve_image: changed
 
 
 - name: Wait 10 seconds to have Traefik notice changed services

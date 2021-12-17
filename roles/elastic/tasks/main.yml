@@ -336,7 +336,6 @@
                 target: /usr/share/filebeat/data
                 volume:
                   nocopy: true
-    resolve_image: changed
 
 
 # Normally one would assume community.docker.docker_swarm_service with

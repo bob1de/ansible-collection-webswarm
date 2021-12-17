@@ -281,7 +281,6 @@
                 source: "{{ traefik_dir }}/dynconfig"
                 target: /dynconfig
                 read_only: true
-    resolve_image: changed
 
 
 - name: Wait for Traefik's ports to become reachable
