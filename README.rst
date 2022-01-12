@@ -64,6 +64,10 @@ all managed hosts:
 
 * iproute2
 
+The following packages need to be installed on the Ansible controller at least:
+
+* python3-netaddr
+
 
 Installation
 ------------
