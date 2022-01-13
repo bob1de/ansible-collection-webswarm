@@ -57,7 +57,7 @@
       delegate_to: localhost
       ansible.builtin.template:
         src: config.php.j2
-        dest: ./build/config.php
+        dest: ./app/config.php
         mode: 0640
         backup: true
 
@@ -76,7 +76,7 @@
         # Rebuild if image exists to detect changes
         force_source: true
         build:
-          path: ./build
+          path: ./app
 
     - when: is_swarm_leader
       block:

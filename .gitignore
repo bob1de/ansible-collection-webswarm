@@ -144,5 +144,5 @@ cython_debug/
 /demo/molecule/default/elasticsearch-self-signed.*
 /demo/molecule/default/filebeat-setup-last-version
 /demo/molecule/default/registry-self-signed.*
-/demo/molecule/default/sample-web-app/build/config.php*
+/demo/molecule/default/sample-todo-app/app/config.php*
 /demo/molecule/default/vars/webswarm-secrets.yml*
