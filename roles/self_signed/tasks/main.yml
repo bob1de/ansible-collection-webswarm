@@ -34,6 +34,7 @@
         subject_alt_name: "{{ _ss_config.subject_alt_name }}"
         use_common_name_for_san: false
         backup: "{{ _ss_config.backup }}"
+        force: true
 
     - name: Generate self-signed certificate
       community.crypto.x509_certificate:
@@ -44,3 +45,4 @@
         selfsigned_digest: "{{ _ss_config.digest | default(omit) }}"
         selfsigned_not_after: "{{ _ss_config.validity }}"
         backup: "{{ _ss_config.backup }}"
+        force: true
