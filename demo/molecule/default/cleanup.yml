@@ -20,6 +20,7 @@
     - name: Log out from private Docker registry
       run_once: true
       delegate_to: localhost
+      ignore_errors: true
       community.docker.docker_login:
         registry_url: "https://{{ registry_spec }}"
         state: absent
