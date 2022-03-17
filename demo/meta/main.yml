@@ -1,3 +1,8 @@
 ---
 
 dependencies: []
+
+# This info is never used for this dummy role, it just satisfies the linter
+galaxy_info:
+  role_name: webswarm_demo
+  namespace: bob1de

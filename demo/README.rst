@@ -75,7 +75,7 @@ is in):
 
 .. code-block:: bash
 
-   mol converge
+   molecule converge
 
 After this has finished, the Swarm should be set up and the URL under which the
 sample app is accessible be displayed by a task of the executed Ansible playbook.
@@ -84,8 +84,8 @@ You can also list and log in to the Swarm VMs to inspect their state:
 
 .. code-block:: bash
 
-   mol list
-   mol login --host <hostname>
+   molecule list
+   molecule login --host <hostname>
 
 
 Cleanup
@@ -102,7 +102,7 @@ Start the sequence by issuing:
 
 .. code-block:: bash
 
-   mol destroy
+   molecule destroy
 
 Apart from the downloaded Vagrant boxes and respective libvirt volumes, your system
 should now be as virgin as it was before. You can remove these as well using the
